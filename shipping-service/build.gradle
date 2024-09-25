@@ -35,3 +35,11 @@ tasks.named('test') {
 bootJar{
 	archiveFileName = 'shipping-service.jar'
 }
+
+sourceSets {
+	main {
+		java {
+			srcDir '../common/src/main/java'
+		}
+	}
+}
