@@ -1,31 +1,33 @@
-version: '3.8'
 services:
   zookeeper:
-    image: wurstmeister/zookeeper:3.4.6
+    image: zookeeper:latest
     ports:
       - "2181:2181"
 
   kafka:
     image: wurstmeister/kafka:2.12-2.3.0
     ports:
-      - "9092:9092"
+      - "9092:9092"    # INSIDE listener 포트
+      - "29092:29092"  # OUTSIDE listener 포트
     environment:
-      KAFKA_ADVERTISED_LISTENERS: INSIDE://kafka:9092,OUTSIDE://localhost:9092
+      KAFKA_ADVERTISED_LISTENERS: INSIDE://kafka:9092,OUTSIDE://localhost:29092
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INSIDE:PLAINTEXT,OUTSIDE:PLAINTEXT
       KAFKA_INTER_BROKER_LISTENER_NAME: INSIDE
       KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENERS: INSIDE://0.0.0.0:9092,OUTSIDE://0.0.0.0:29092  # 두 listener가 서로 다른 포트를 사용하도록 설정
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+
 
   mysql:
     image: mysql:8.0.19
     ports:
       - "3306:3306"
     environment:
-      MYSQL_ROOT_PASSWORD: root
+      MYSQL_ROOT_PASSWORD: 123456
       MYSQL_DATABASE: order_db
-      MYSQL_USER: user
-      MYSQL_PASSWORD: password
+      MYSQL_USER: root
+      MYSQL_PASSWORD: 123456
     volumes:
       - ./mysql/data:/var/lib/mysql
 
@@ -37,8 +39,9 @@ services:
       - "8081:8081"                          # 호스트 포트 -> 컨테이너 포트 매핑
     environment:
       SPRING_DATASOURCE_URL: jdbc:mysql://mysql:3306/order_db
-      SPRING_DATASOURCE_USERNAME: user
-      SPRING_DATASOURCE_PASSWORD: password
+      SPRING_DATASOURCE_USERNAME: root
+      SPRING_DATASOURCE_PASSWORD: 123456
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
       SPRING_PROFILES_ACTIVE: docker         # docker 프로파일 사용
     depends_on:
       - kafka
@@ -52,8 +55,9 @@ services:
       - "8082:8082"
     environment:
       SPRING_DATASOURCE_URL: jdbc:mysql://mysql:3306/payment_db
-      SPRING_DATASOURCE_USERNAME: user
-      SPRING_DATASOURCE_PASSWORD: password
+      SPRING_DATASOURCE_USERNAME: root
+      SPRING_DATASOURCE_PASSWORD: 123456
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
       SPRING_PROFILES_ACTIVE: docker
     depends_on:
       - kafka
@@ -67,8 +71,9 @@ services:
       - "8083:8083"
     environment:
       SPRING_DATASOURCE_URL: jdbc:mysql://mysql:3306/inventory_db
-      SPRING_DATASOURCE_USERNAME: user
-      SPRING_DATASOURCE_PASSWORD: password
+      SPRING_DATASOURCE_USERNAME: root
+      SPRING_DATASOURCE_PASSWORD: 123456
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
       SPRING_PROFILES_ACTIVE: docker
     depends_on:
       - kafka
@@ -82,8 +87,9 @@ services:
       - "8084:8084"
     environment:
       SPRING_DATASOURCE_URL: jdbc:mysql://mysql:3306/shipping_db
-      SPRING_DATASOURCE_USERNAME: user
-      SPRING_DATASOURCE_PASSWORD: password
+      SPRING_DATASOURCE_USERNAME: root
+      SPRING_DATASOURCE_PASSWORD: 123456
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
       SPRING_PROFILES_ACTIVE: docker
     depends_on:
       - kafka
