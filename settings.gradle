@@ -1,7 +1,8 @@
 rootProject.name = 'event-driven-order-system'
 
-include 'order-service', 'payment-service', 'inventory-service', 'shipping-service'
+include 'common','order-service', 'payment-service', 'inventory-service', 'shipping-service'
 
+project(':common').projectDir = file('common')
 project(':order-service').projectDir = file('order-service')
 project(':payment-service').projectDir = file('payment-service')
 project(':inventory-service').projectDir = file('inventory-service')
