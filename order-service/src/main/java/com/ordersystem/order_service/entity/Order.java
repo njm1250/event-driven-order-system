@@ -1,19 +1,29 @@
 package com.ordersystem.order_service.entity;
 
-import jakarta.persistence.Entity;
-import jakarta.persistence.GeneratedValue;
-import jakarta.persistence.GenerationType;
-import jakarta.persistence.Id;
+import jakarta.persistence.*;
+import lombok.*;
 
 @Entity
+@Getter
+@Setter
+@NoArgsConstructor
+@AllArgsConstructor
+@Table(name="orders")
 public class Order {
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
-    private Long id;
+    @Column(name = "order_id")
+    private Long orderId;
+    @Column(name = "product_cd")
     private String productCode;
     private int quantity;
     private double price;
 
-    // Getters and Setters 생략
+    @Builder
+    public Order(String productCode, int quantity, double price) {
+        this.productCode = productCode;
+        this.quantity = quantity;
+        this.price = price;
+    }
 }
