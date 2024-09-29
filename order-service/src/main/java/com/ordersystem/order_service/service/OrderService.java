@@ -1,5 +1,6 @@
 package com.ordersystem.order_service.service;
 
+import com.ordersystem.common.events.OrderCreatedEvent;
 import com.ordersystem.order_service.entity.Order;
 import com.ordersystem.order_service.repository.OrderRepository;
 import org.springframework.stereotype.Service;
@@ -15,9 +16,15 @@ public class OrderService {
     private OrderRepository orderRepository;
 
     public void createOrder(Order order) {
-        orderRepository.save(order);
+        Order savedOrder = orderRepository.save(order);
 
-        // String message = "Order Created: " + order.getId();
-        // orderProducer.sendMessage("inventory-topic", message);
+        OrderCreatedEvent orderCreatedEvent = OrderCreatedEvent.builder()
+                .orderId(savedOrder.getOrderId())
+                .productCode(savedOrder.getProductCode())
+                .quantity(savedOrder.getQuantity())
+                .price(savedOrder.getPrice())
+                .orderStatus(savedOrder.getOrderStatus().name())
+                .build();
+        orderProducer.sendMessage("inventory-order-created", orderCreatedEvent);
     }
 }

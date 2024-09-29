@@ -1,6 +1,7 @@
 package com.ordersystem.order_service.controller;
 
 import com.ordersystem.order_service.entity.Order;
+import com.ordersystem.order_service.entity.OrderStatus;
 import com.ordersystem.order_service.service.OrderService;
 import jakarta.annotation.PostConstruct;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -23,6 +24,7 @@ public class OrderController {
                 .productCode("TEST")
                 .quantity(1)
                 .price(1000)
+                .orderStatus(OrderStatus.PENDING)
                 .build();
         orderService.createOrder(order);
         return ResponseEntity.ok("test");
