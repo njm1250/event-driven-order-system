@@ -21,7 +21,7 @@ public class OrderController {
     @GetMapping("/test")
     public ResponseEntity<String> test() {
         Order order = Order.builder()
-                .productCode("TEST")
+                .productCode("P12345")
                 .quantity(1)
                 .price(1000)
                 .orderStatus(OrderStatus.PENDING)
