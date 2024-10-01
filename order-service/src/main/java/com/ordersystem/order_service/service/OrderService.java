@@ -16,7 +16,7 @@ public class OrderService {
     @Autowired
     private OrderRepository orderRepository;
 
-    public void createOrder(Order order) {
+    public void processCreateOrder(Order order) {
         try {
             Order savedOrder = orderRepository.save(order);
 

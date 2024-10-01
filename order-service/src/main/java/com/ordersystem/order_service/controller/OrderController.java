@@ -30,7 +30,7 @@ public class OrderController {
                     .orderStatus(OrderStatus.PENDING)
                     .build();
 
-            orderService.createOrder(order);
+            orderService.processCreateOrder(order);
             return ResponseEntity.status(HttpStatus.CREATED).body("Order created successfully");
 
         } catch (Exception e) {
