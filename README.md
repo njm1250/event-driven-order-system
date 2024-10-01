@@ -9,6 +9,7 @@ A prototype of an event-driven order management system built with **Spring Boot*
 This system is built using a **microservice architecture**. Each service operates independently and communicates asynchronously using **Kafka** events.
 
 ### Key Services
+- **API Gateway**: 개발중
 - **Order Service**: 설명추가
 - **Inventory Service**: 설명추가
 - **Payment and Shipping Services**: 개발중
