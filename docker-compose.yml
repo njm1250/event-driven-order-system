@@ -95,6 +95,18 @@ services:
       - kafka
       - mysql
 
+  api-gateway:
+    build:
+      context: ./api-gateway
+      dockerfile: Dockerfile
+    ports:
+      - "8085:8085"
+    depends_on:
+      - order-service
+      - inventory-service
+      - payment-service
+      - shipping-service
+
 networks:
   default:
     driver: bridge
