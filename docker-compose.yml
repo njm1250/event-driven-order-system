@@ -47,25 +47,9 @@ services:
       - kafka
       - mysql
 
-  payment-service:
-    build:
-      context: ./payment-service             # payment-service 디렉토리에서 Dockerfile 빌드
-      dockerfile: Dockerfile
-    ports:
-      - "8082:8082"
-    environment:
-      SERVER_PORT: 8082
-      SPRING_DATASOURCE_URL: jdbc:mysql://mysql:3306/payment_db
-      SPRING_DATASOURCE_USERNAME: root
-      SPRING_DATASOURCE_PASSWORD: 123456
-      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
-    depends_on:
-      - kafka
-      - mysql
-
   inventory-service:
     build:
-      context: ./inventory-service           # inventory-service 디렉토리에서 Dockerfile 빌드
+      context: ./inventory-service
       dockerfile: Dockerfile
     ports:
       - "8083:8083"
@@ -78,34 +62,6 @@ services:
     depends_on:
       - kafka
       - mysql
-
-  shipping-service:
-    build:
-      context: ./shipping-service            # shipping-service 디렉토리에서 Dockerfile 빌드
-      dockerfile: Dockerfile
-    ports:
-      - "8084:8084"
-    environment:
-      SERVER_PORT: 8084
-      SPRING_DATASOURCE_URL: jdbc:mysql://mysql:3306/shipping_db
-      SPRING_DATASOURCE_USERNAME: root
-      SPRING_DATASOURCE_PASSWORD: 123456
-      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
-    depends_on:
-      - kafka
-      - mysql
-
-  api-gateway:
-    build:
-      context: ./api-gateway
-      dockerfile: Dockerfile
-    ports:
-      - "8085:8085"
-    depends_on:
-      - order-service
-      - inventory-service
-      - payment-service
-      - shipping-service
 
 networks:
   default:
