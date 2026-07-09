@@ -4,4 +4,4 @@ plugins {
 
 rootProject.name = 'event-driven-order-system'
 
-include 'common', 'order-service', 'inventory-service'
+include 'common', 'order-service', 'inventory-service', 'notification-service'

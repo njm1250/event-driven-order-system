@@ -71,5 +71,24 @@ services:
       mysql:
         condition: service_healthy
 
+  notification-service:
+    build:
+      context: .
+      dockerfile: notification-service/Dockerfile
+    ports:
+      - "8084:8084"
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:mysql://mysql:3306/notification_db
+      SPRING_DATASOURCE_USERNAME: root
+      SPRING_DATASOURCE_PASSWORD: ${MYSQL_ROOT_PASSWORD:-labpassword}
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      APP_IDEMPOTENCY_ENABLED: ${APP_IDEMPOTENCY_ENABLED:-true}
+    depends_on:
+      kafka:
+        condition: service_healthy
+      mysql:
+        condition: service_healthy
+
+
 volumes:
   mysql-data:
