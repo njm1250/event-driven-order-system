@@ -1,6 +1,7 @@
 package com.ordersystem.order_service.service;
 
 import com.ordersystem.common.events.OrderCreatedEvent;
+import com.ordersystem.common.events.Topics;
 import com.ordersystem.order_service.entity.Order;
 import com.ordersystem.order_service.entity.OrderStatus;
 import com.ordersystem.order_service.repository.OrderRepository;
@@ -31,10 +32,9 @@ public class OrderService {
                 .productCode(savedOrder.getProductCode())
                 .quantity(savedOrder.getQuantity())
                 .price(savedOrder.getPrice())
-                .orderStatus(savedOrder.getOrderStatus().name())
                 .build();
 
-        orderProducer.sendMessage("inventory-order-created", event);
+        orderProducer.sendMessage(Topics.ORDER_CREATED, String.valueOf(savedOrder.getOrderId()), event);
         return savedOrder;
     }
 

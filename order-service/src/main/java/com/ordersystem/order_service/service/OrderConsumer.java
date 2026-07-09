@@ -2,6 +2,7 @@ package com.ordersystem.order_service.service;
 
 import com.ordersystem.common.events.OrderStockUpdateFailedEvent;
 import com.ordersystem.common.events.OrderStockUpdatedEvent;
+import com.ordersystem.common.events.Topics;
 import com.ordersystem.order_service.entity.Order;
 import com.ordersystem.order_service.entity.OrderStatus;
 import com.ordersystem.order_service.repository.OrderRepository;
@@ -17,7 +18,7 @@ public class OrderConsumer {
 
     private final OrderRepository orderRepository;
 
-    @KafkaListener(topics = "order-stock-update", groupId = "order-group")
+    @KafkaListener(topics = Topics.STOCK_UPDATED, groupId = "order-group")
     public void handleStockUpdatedEvent(OrderStockUpdatedEvent event) {
         Order order = orderRepository.findById(event.getOrderId())
                 .orElseThrow(() -> new IllegalStateException("Order not found: " + event.getOrderId()));
@@ -26,7 +27,7 @@ public class OrderConsumer {
         orderRepository.save(order);
     }
 
-    @KafkaListener(topics = "order-stock-update-failed", groupId = "order-group")
+    @KafkaListener(topics = Topics.STOCK_UPDATE_FAILED, groupId = "order-group")
     public void handleStockUpdateFailedEvent(OrderStockUpdateFailedEvent event) {
         Order order = orderRepository.findById(event.getOrderId())
                 .orElseThrow(() -> new IllegalStateException("Order not found: " + event.getOrderId()));

@@ -3,6 +3,7 @@ package com.ordersystem.inventory_service.service;
 import com.ordersystem.common.events.OrderCreatedEvent;
 import com.ordersystem.common.events.OrderStockUpdateFailedEvent;
 import com.ordersystem.common.events.OrderStockUpdatedEvent;
+import com.ordersystem.common.events.Topics;
 import com.ordersystem.inventory_service.entity.Inventory;
 import com.ordersystem.inventory_service.repository.InventoryRepository;
 import jakarta.persistence.OptimisticLockException;
@@ -21,8 +22,9 @@ public class InventoryConsumer {
     private final InventoryProducer inventoryProducer;
     private final InventoryRepository inventoryRepository;
 
-    @KafkaListener(topics = "inventory-order-created", groupId = "inventory-group")
+    @KafkaListener(topics = Topics.ORDER_CREATED, groupId = "inventory-group")
     public void handleOrderCreatedEvent(OrderCreatedEvent event) {
+        String key = String.valueOf(event.getOrderId());
         Optional<Inventory> inventoryOpt = inventoryRepository.findByProductCode(event.getProductCode());
 
         inventoryOpt.ifPresent(inventory -> {
@@ -30,14 +32,21 @@ public class InventoryConsumer {
                 inventory.setStockQuantity(inventory.getStockQuantity() - event.getQuantity());
                 try {
                     inventoryRepository.save(inventory);
-                    inventoryProducer.sendMessage("order-stock-update", new OrderStockUpdatedEvent(event.getOrderId()));
+                    inventoryProducer.sendMessage(Topics.STOCK_UPDATED, key,
+                            OrderStockUpdatedEvent.builder().orderId(event.getOrderId()).build());
                 } catch (OptimisticLockException e) {
-                    inventoryProducer.sendMessage("order-stock-update-failed",
-                            new OrderStockUpdateFailedEvent(event.getOrderId(), "Insufficient stock available"));
+                    inventoryProducer.sendMessage(Topics.STOCK_UPDATE_FAILED, key,
+                            OrderStockUpdateFailedEvent.builder()
+                                    .orderId(event.getOrderId())
+                                    .reason("Insufficient stock available")
+                                    .build());
                 }
             } else {
-                inventoryProducer.sendMessage("order-stock-update-failed",
-                        new OrderStockUpdateFailedEvent(event.getOrderId(), "Product out of stock"));
+                inventoryProducer.sendMessage(Topics.STOCK_UPDATE_FAILED, key,
+                        OrderStockUpdateFailedEvent.builder()
+                                .orderId(event.getOrderId())
+                                .reason("Product out of stock")
+                                .build());
             }
         });
     }
