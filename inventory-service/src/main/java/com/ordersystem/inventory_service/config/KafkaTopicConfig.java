@@ -25,4 +25,9 @@ public class KafkaTopicConfig {
     public NewTopic stockUpdateFailedTopic() {
         return TopicBuilder.name(Topics.STOCK_UPDATE_FAILED).partitions(PARTITIONS).replicas(1).build();
     }
+
+    @Bean
+    public NewTopic orderCreatedDltTopic() {
+        return TopicBuilder.name(Topics.ORDER_CREATED + ".DLT").partitions(PARTITIONS).replicas(1).build();
+    }
 }
