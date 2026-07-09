@@ -1,68 +1,75 @@
 services:
-  zookeeper:
-    image: zookeeper:latest
-    ports:
-      - "2181:2181"
-
   kafka:
-    image: wurstmeister/kafka:2.12-2.3.0
+    image: apache/kafka:3.9.1
     ports:
-      - "9092:9092"    # INSIDE listener 포트
-      - "29092:29092"  # OUTSIDE listener 포트
+      - "29092:29092"
     environment:
-      KAFKA_ADVERTISED_LISTENERS: INSIDE://kafka:9092,OUTSIDE://localhost:29092
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INSIDE:PLAINTEXT,OUTSIDE:PLAINTEXT
-      KAFKA_INTER_BROKER_LISTENER_NAME: INSIDE
-      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
-      KAFKA_LISTENERS: INSIDE://0.0.0.0:9092,OUTSIDE://0.0.0.0:29092  # 두 listener가 서로 다른 포트를 사용하도록 설정
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_LISTENERS: INTERNAL://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093,EXTERNAL://0.0.0.0:29092
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:9092,EXTERNAL://localhost:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
 
   mysql:
-    image: mysql:5.7
+    image: mysql:8.4
     ports:
       - "3306:3306"
     environment:
-      MYSQL_ROOT_PASSWORD: 123456
-      MYSQL_DATABASE: order_db
-      # MYSQL_USER: root
-      # MYSQL_PASSWORD: 123456
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-labpassword}
     volumes:
-      - ./mysql/data:/var/lib/mysql
+      - mysql-data:/var/lib/mysql
+      - ./docker/mysql-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h localhost -uroot -p${MYSQL_ROOT_PASSWORD:-labpassword} >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
 
   order-service:
     build:
-      context: ./order-service               # order-service 디렉토리에서 Dockerfile 빌드
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: order-service/Dockerfile
     ports:
-      - "8081:8081"                          # 호스트 포트 -> 컨테이너 포트 매핑
+      - "8081:8081"
     environment:
-      SERVER_PORT: 8081
       SPRING_DATASOURCE_URL: jdbc:mysql://mysql:3306/order_db
       SPRING_DATASOURCE_USERNAME: root
-      SPRING_DATASOURCE_PASSWORD: 123456
+      SPRING_DATASOURCE_PASSWORD: ${MYSQL_ROOT_PASSWORD:-labpassword}
       SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      APP_OUTBOX_ENABLED: ${APP_OUTBOX_ENABLED:-false}
     depends_on:
-      - kafka
-      - mysql
+      kafka:
+        condition: service_healthy
+      mysql:
+        condition: service_healthy
 
   inventory-service:
     build:
-      context: ./inventory-service
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: inventory-service/Dockerfile
     ports:
       - "8083:8083"
     environment:
-      SERVER_PORT: 8083
       SPRING_DATASOURCE_URL: jdbc:mysql://mysql:3306/inventory_db
       SPRING_DATASOURCE_USERNAME: root
-      SPRING_DATASOURCE_PASSWORD: 123456
+      SPRING_DATASOURCE_PASSWORD: ${MYSQL_ROOT_PASSWORD:-labpassword}
       SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      APP_IDEMPOTENCY_ENABLED: ${APP_IDEMPOTENCY_ENABLED:-true}
     depends_on:
-      - kafka
-      - mysql
+      kafka:
+        condition: service_healthy
+      mysql:
+        condition: service_healthy
 
-networks:
-  default:
-    driver: bridge
+volumes:
+  mysql-data:
