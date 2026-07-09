@@ -5,20 +5,22 @@ import com.ordersystem.common.events.OrderStockUpdatedEvent;
 import com.ordersystem.order_service.entity.Order;
 import com.ordersystem.order_service.entity.OrderStatus;
 import com.ordersystem.order_service.repository.OrderRepository;
-import org.springframework.beans.factory.annotation.Autowired;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.kafka.annotation.KafkaListener;
 import org.springframework.stereotype.Service;
 
 @Service
+@Slf4j
+@RequiredArgsConstructor
 public class OrderConsumer {
 
-    @Autowired
-    private OrderRepository orderRepository;
+    private final OrderRepository orderRepository;
 
     @KafkaListener(topics = "order-stock-update", groupId = "order-group")
     public void handleStockUpdatedEvent(OrderStockUpdatedEvent event) {
         Order order = orderRepository.findById(event.getOrderId())
-                .orElseThrow(() -> new RuntimeException("Order not found"));
+                .orElseThrow(() -> new IllegalStateException("Order not found: " + event.getOrderId()));
 
         order.setOrderStatus(OrderStatus.CONFIRMED);
         orderRepository.save(order);
@@ -27,12 +29,11 @@ public class OrderConsumer {
     @KafkaListener(topics = "order-stock-update-failed", groupId = "order-group")
     public void handleStockUpdateFailedEvent(OrderStockUpdateFailedEvent event) {
         Order order = orderRepository.findById(event.getOrderId())
-                .orElseThrow(() -> new RuntimeException("Order not found"));
+                .orElseThrow(() -> new IllegalStateException("Order not found: " + event.getOrderId()));
 
-        System.out.println("Order failed due to: " + event.getReason());
+        log.info("Order {} cancelled: {}", event.getOrderId(), event.getReason());
 
         order.setOrderStatus(OrderStatus.CANCELLED);
         orderRepository.save(order);
     }
-
 }
