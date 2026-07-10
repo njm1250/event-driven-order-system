@@ -47,6 +47,7 @@ services:
       SPRING_DATASOURCE_PASSWORD: ${MYSQL_ROOT_PASSWORD:-labpassword}
       SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
       APP_OUTBOX_ENABLED: ${APP_OUTBOX_ENABLED:-false}
+      APP_KAFKA_PARTITIONS: ${APP_KAFKA_PARTITIONS:-3}
     depends_on:
       kafka:
         condition: service_healthy
@@ -65,6 +66,7 @@ services:
       SPRING_DATASOURCE_PASSWORD: ${MYSQL_ROOT_PASSWORD:-labpassword}
       SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
       APP_IDEMPOTENCY_ENABLED: ${APP_IDEMPOTENCY_ENABLED:-true}
+      APP_KAFKA_PARTITIONS: ${APP_KAFKA_PARTITIONS:-3}
     depends_on:
       kafka:
         condition: service_healthy
