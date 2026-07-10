@@ -1,40 +1,36 @@
 package com.ordersystem.order_service.controller;
 
+import com.ordersystem.order_service.dto.CreateOrderRequest;
+import com.ordersystem.order_service.dto.OrderResponse;
 import com.ordersystem.order_service.entity.Order;
-import com.ordersystem.order_service.entity.OrderStatus;
 import com.ordersystem.order_service.service.OrderService;
-import jakarta.annotation.PostConstruct;
-import org.springframework.beans.factory.annotation.Autowired;
+import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
-import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RestController;
-import com.ordersystem.common.events.OrderCreatedEvent;
+import org.springframework.web.bind.annotation.*;
 
 @RestController
 @RequestMapping("/orders")
+@RequiredArgsConstructor
 public class OrderController {
 
-    @Autowired
-    private OrderService orderService;
+    private final OrderService orderService;
 
     @PostMapping
-    public ResponseEntity<String> createOrder() {
-        try {
-            Order order = Order.builder()
-                    .productCode("P001")
-                    .quantity(1)
-                    .price(1000)
-                    .orderStatus(OrderStatus.PENDING)
-                    .build();
-
-            orderService.processCreateOrder(order);
-            return ResponseEntity.status(HttpStatus.CREATED).body("Order created successfully");
-
-        } catch (Exception e) {
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body("Failed to create order: " + e.getMessage());
+    public ResponseEntity<?> createOrder(@RequestBody CreateOrderRequest request) {
+        if (request.isInvalid()) {
+            return ResponseEntity.badRequest()
+                    .body("productCode는 필수, quantity > 0, price >= 0 이어야 합니다");
         }
+
+        Order order = orderService.createOrder(request.productCode(), request.quantity(), request.price());
+        return ResponseEntity.status(HttpStatus.CREATED).body(OrderResponse.from(order));
+    }
+
+    @GetMapping("/{orderId}")
+    public ResponseEntity<OrderResponse> getOrder(@PathVariable Long orderId) {
+        return orderService.findOrder(orderId)
+                .map(order -> ResponseEntity.ok(OrderResponse.from(order)))
+                .orElseGet(() -> ResponseEntity.notFound().build());
     }
 }
