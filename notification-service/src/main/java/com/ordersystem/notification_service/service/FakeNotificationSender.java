@@ -1,5 +1,6 @@
 package com.ordersystem.notification_service.service;
 
+import com.ordersystem.common.events.NotificationRequestedEvent;
 import com.ordersystem.notification_service.entity.NotificationHistory;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
@@ -25,6 +26,20 @@ public class FakeNotificationSender {
     }
 
     public void send(Long orderId, NotificationHistory.Type type, String reason) {
+        simulateLatencyAndFailure("order " + orderId);
+        log.info("[NOTIFY] order={} type={}{}", orderId, type, reason == null ? "" : " reason=" + reason);
+    }
+
+    public void send(NotificationRequestedEvent event) {
+        simulateLatencyAndFailure("event " + event.getEventId());
+        log.info(
+                "[NOTIFY] event={} user={} priority={}",
+                event.getEventId(),
+                event.getUserId(),
+                event.getPriority());
+    }
+
+    private void simulateLatencyAndFailure(String target) {
         if (latencyMs > 0) {
             try {
                 Thread.sleep(latencyMs);
@@ -35,9 +50,7 @@ public class FakeNotificationSender {
         }
 
         if (failureRate > 0 && ThreadLocalRandom.current().nextDouble() < failureRate) {
-            throw new IllegalStateException("Simulated send failure for order " + orderId);
+            throw new IllegalStateException("Simulated send failure for " + target);
         }
-
-        log.info("[NOTIFY] order={} type={}{}", orderId, type, reason == null ? "" : " reason=" + reason);
     }
 }
