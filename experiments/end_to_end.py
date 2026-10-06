@@ -50,7 +50,15 @@ def run(base, mode, boundary='none', concurrent_duplicate=False):
             time.sleep(3)
         collector=launch([sys.executable,str(REPO/'experiments/collector.py'),'--directory',str(root)],root/'collector.log')
         if boundary!='none':(root/'hooks'/f'{boundary}.arm').touch();record('gate_armed',gate=boundary)
-        orders=[http('http://localhost:8081/orders',dict(productCode='SKU-1',quantity=2,price=100,sellerId='slow' if i%2==0 else 'normal',runId=root.name)) for i in range(6)]
+        record('workload_started')
+        orders=[];input_times={}
+        for i in range(6):
+            started=now()
+            order_input=dict(productCode='SKU-1',quantity=2,price=100,sellerId='slow' if i%2==0 else 'normal',runId=root.name)
+            order=http('http://localhost:8081/orders',order_input)
+            orders.append(order)
+            input_times[f'{order["orderId"]}/1']=started
+        save(root/'input-times.json',input_times)
         save(root/'source-input.json',orders)
         if boundary!='none':
             wait_for(lambda:(root/'hooks'/f'{boundary}.reached').exists(),label='broker acknowledged Outbox')
@@ -70,8 +78,11 @@ def run(base, mode, boundary='none', concurrent_duplicate=False):
             record('process_restarted')
         wait_for(lambda: all(http(f'http://localhost:8081/orders/{o["orderId"]}')['status']=='CONFIRMED' for o in orders),timeout=60,label='source confirmations')
         for o in orders:
+            input_times[f'{o["orderId"]}/2']=now()
             http(f'http://localhost:8081/orders/{o["orderId"]}',dict(quantity=3,price=120),method='PATCH')
+            input_times[f'{o["orderId"]}/3']=now()
             http(f'http://localhost:8081/orders/{o["orderId"]}/cancel',{},method='POST')
+            save(root/'input-times.json',input_times)
         records=sql("SELECT payload FROM outbox_event WHERE topic='partner-order-requests' ORDER BY id",'order_db')
         expected=[]
         source_sellers={o['orderId']:'slow' if i%2==0 else 'normal' for i,o in enumerate(orders)}

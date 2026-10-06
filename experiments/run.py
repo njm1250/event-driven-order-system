@@ -209,6 +209,13 @@ def report(root, expected, result):
     metrics['cpuInstances']=len(cpu_by_instance)
     metrics['externalSqliteBytes']=(root/'external.sqlite').stat().st_size + sum(x.stat().st_size for x in root.glob('external.sqlite-*'))
     metrics['rawEvidenceBytes']=sum(x.stat().st_size for x in root.rglob('*') if x.is_file())
+    if (root/'input-times.json').exists():
+        inputs=json.loads((root/'input-times.json').read_text())
+        source_rows=[]
+        for seller in ['normal','slow']:
+            times=[row['effect_at']-inputs[f'{row["order_id"]}/{row["seq"]}'] for row in remote['effects'] if row['seller_id']==seller]
+            source_rows.append(dict(seller=seller,p95Ms=percentile(times,.95),p99Ms=percentile(times,.99)))
+        metrics['sourceApiLatency']=source_rows
     save(root/'summary.json',metrics)
     return metrics
 
