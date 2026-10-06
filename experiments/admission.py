@@ -65,6 +65,13 @@ try:
     save(root/'expected.json',expected)
     wait_for(lambda:http('http://localhost:8090/observe').get('committedRemaining')==0,timeout=10)
     remote,effects,states=snapshot(root);checked=check(expected,remote,effects,states)
+    source_orders=sql('SELECT order_id,order_status,partner_sequence,quantity,price FROM orders','order_db')
+    source_stock=int(sql("SELECT stock_quantity FROM inventories WHERE product_cd='SKU-1'",'inventory_db')[0]['stock_quantity'])
+    save(root/'source-final.json',dict(orders=source_orders,stock=source_stock))
+    if len(source_orders)!=201 or source_stock!=598 or any(x['order_status']!='CONFIRMED' or x['partner_sequence']!=1 or x['quantity']!=2 or x['price']!=100 for x in source_orders):
+        checked['errors'].append('Source mutation rollback or inventory effect mismatch')
+        checked['passed']=False
+    checked['sourceStock']=source_stock
     checked['acceptedUnfinished']=200;checked['rejected201st']=True;checked['rejectedMutationRolledBack']=True;checked['postDrainReadmitted']=True
     save(root/'checker.json',checked)
     (root/'collector.stop').touch();collector.wait(timeout=8)
