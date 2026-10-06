@@ -28,7 +28,7 @@ for item in items:
         if len(source['history'])!=len(wanted) or {x['order_id'] for x in source['history']}!=wanted or {x['order_id'] for x in source['orders']}!=wanted:
             errors.append(f'{d.name}: source inventory history does not cover each HTTP order exactly once')
 for mode in ['sequential','async','inbox']:
-    api=require('api-'+mode,mode,'api',3,observe=True)
+    api=require('api-'+mode,mode,'api',3,observe=True,workload='pair')
     for observed in [True,False]:require(f'clean-{mode}-{observed}',mode,'clean',3,observe=observed)
     for scenario in ['db','response-loss','redelivery','retry','hotkey','broker-kill']:require(scenario+'-'+mode,mode,scenario)
     for fault in [False,True]:require(f'http-{mode}-{fault}',mode,'end-to-end',boundary='none',concurrentDuplicate=False,sourcePollMs=100,sellerFault=fault)
@@ -57,9 +57,18 @@ for item in admitted:
     if checked.get('acceptedUnfinished')!=200 or not checked.get('rejected201st'):errors.append('Global admission missing 200/201 proof')
 for mode in ['sequential','async','inbox']:
     for scenario,hypothesis in [('api','seller_api_delay'),('db','shared_db_pool')]+([('ack-release','post_business_ack_delay')] if mode!='inbox' else []):
-        cases=[x for x in items if x['settings'].get('mode')==mode and x['settings'].get('scenario')==scenario]
+        cases=[x for x in items if x['settings'].get('mode')==mode and x['settings'].get('scenario')==scenario and x['settings'].get('workload','pair')=='pair']
         if not cases or cases[-1]['diagnosis']['verdict'][hypothesis]!='수용':errors.append(f'Diagnostic proof missing: {mode}/{hypothesis}')
 if not (root/'baseline'/'actual-run.json').exists():errors.append('Original baseline missing')
+# Standard remedies compared under the same contract.
+for mode in ['circuit-breaker','retry-topic','parallel-consumer']:
+    require('api-'+mode,mode,'api',3,observe=True,workload='pair')
+    for scenario in ['db','response-loss','redelivery','retry','hotkey','broker-kill','external-kill','business-before-kill','ack-kill']:require(scenario+'-'+mode,mode,scenario)
+    require(f'http-{mode}-True',mode,'end-to-end',boundary='none',concurrentDuplicate=False,sourcePollMs=100,sellerFault=True)
+require('park-kill-retry-topic','retry-topic','park-kill')
+for mode in ['sequential','async','inbox','circuit-breaker','retry-topic','parallel-consumer']:
+    for partitions in [1,4]:require(f'market-p{partitions}-{mode}',mode,'api',3,workload='market',partitions=partitions)
+for mode in ['sequential','retry-topic','parallel-consumer','inbox']:require('hang-'+mode,mode,'hang',3,workload='market',partitions=4)
 result=dict(passed=not errors,completedAt=int(time.time()*1000),replayedRuns=len(replayed),effectCount=sum(x['expected'] for x in replayed),requirements=requirements,errors=errors)
 (root/'checker-replay.json').write_text(json.dumps(replayed,ensure_ascii=False,indent=2))
 (root/'local-completion.json').write_text(json.dumps(result,ensure_ascii=False,indent=2))

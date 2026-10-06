@@ -35,7 +35,8 @@ for directory in sorted(root.iterdir()):
     proof=dict(missingCommittedSamples=sum(1 for x in observations if x.get('service') and x['service'].get('brokerCommitted') is None and not x['service'].get('brokerError')),delayedCallsBySeller=delayed,peakDbWaiting=maxwait,completedButUncommittedMaxAgeMs=oldest_committed_gap,
                externalP95Ms=metrics['externalP95Ms'],dbAcquireP95Ms=metrics['dbAcquireP95Ms'])
     verdict={}
-    verdict['seller_api_delay']='수용' if delayed.get('slow',0)>0 and delayed.get('normal',0)==0 else '기각' if delayed else '보류'
+    normal_delayed=sum(v for k,v in delayed.items() if k!='slow')
+    verdict['seller_api_delay']='수용' if delayed.get('slow',0)>0 and normal_delayed==0 else '기각' if delayed else '보류'
     verdict['shared_db_pool']='수용' if maxwait>0 else '기각' if observations else '보류'
     verdict['post_business_ack_delay']='수용' if oldest_committed_gap>=1500 and not maxwait and not sum(delayed.values()) else '보류' if oldest_committed_gap>=1500 else '기각' if observations else '보류'
     diagnosis=dict(evidence=proof,verdict=verdict)
@@ -69,7 +70,7 @@ for directory in sorted(root.iterdir()):
                         detectionDelayMs=detected_ms,evidenceDelayMs=detection['evidenceSavedAt']-detection['detectedAt'] if detection else None))
 (root/'index.json').write_text(json.dumps(reports,ensure_ascii=False,indent=2))
 for mode in ['sequential','async','inbox']:
-    cases=[x for x in reports if x['settings'].get('mode')==mode and x['settings'].get('scenario')=='api' and x['metrics']['checker']['passed'] and x['settings'].get('observe')]
+    cases=[x for x in reports if x['settings'].get('mode')==mode and x['settings'].get('scenario')=='api' and x['settings'].get('workload','pair')=='pair' and x['metrics']['checker']['passed'] and x['settings'].get('observe')]
     # Limit comparisons to the warmed-up committed implementation, not preserved development runs.
     latest=cases[-3:]
     p99=[x['metrics']['latency'][0]['p99Ms'] for x in latest]

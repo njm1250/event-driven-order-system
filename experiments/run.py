@@ -24,6 +24,7 @@ COMPOSE = ['docker','compose','-p','partner-isolation','-f',str(REPO/'docker-com
 PROCESSES = []
 HANDLES = []
 JAVA_RUNTIME = None
+MODES = ['sequential','async','inbox','circuit-breaker','retry-topic','parallel-consumer']
 
 def now():
     return int(time.time()*1000)
@@ -152,13 +153,21 @@ def baseline(base):
         command(COMPOSE+['exec','-T','mysql','mysql','-uroot','-plabpassword','-e','DROP DATABASE order_db; CREATE DATABASE order_db; DROP DATABASE inventory_db; CREATE DATABASE inventory_db; DROP DATABASE notification_db; CREATE DATABASE notification_db;'],stderr=subprocess.DEVNULL)
     print('baseline preserved',flush=True)
 
-def dataset(run_id, orders=24, operations=3):
+MARKET_SELLERS=20
+MARKET_ORDERS=300
+
+def seller_for(i, workload):
+    if workload=='pair':return 'slow' if i%2==0 else 'normal'
+    # One large seller with 20% of orders turns slow; 19 others share the rest.
+    return 'slow' if i%5==0 else f's{i%(MARKET_SELLERS-1)+1:02d}'
+
+def dataset(run_id, orders=24, operations=3, workload='pair'):
     values=[]
-    # Each phase is interleaved between sellers; every event explicitly goes to partition 0.
+    # Each phase is interleaved between sellers.
     for seq in range(1,operations+1):
         for i in range(orders):
             values.append(dict(eventId=str(uuid.uuid5(uuid.NAMESPACE_URL,f'{run_id}/{i}/{seq}')),runId=run_id,
-                sellerId='slow' if i%2==0 else 'normal',orderId=i+1,sequence=seq,
+                sellerId=seller_for(i,workload),orderId=i+1,sequence=seq,
                 operation=['CREATE','CHANGE','CANCEL'][seq-1],occurredAt=now(),schemaVersion=1,
                 quantity=seq+1,price=float(100+seq)))
     return values
@@ -184,8 +193,8 @@ def report(root, expected, result):
     remote=json.loads((root/'remote.json').read_text())
     rows=[]
     for seller in ['normal','slow']:
-        latencies=[x['effect_at']-x['occurred_at'] for x in remote['effects'] if x['seller_id']==seller]
-        rows.append(dict(seller=seller,p95Ms=percentile(latencies,.95),p99Ms=percentile(latencies,.99),maxMs=max(latencies,default=0)))
+        latencies=[x['effect_at']-x['occurred_at'] for x in remote['effects'] if (x['seller_id']=='slow')==(seller=='slow')]
+        rows.append(dict(seller=seller,p95Ms=percentile(latencies,.95),p99Ms=percentile(latencies,.99),maxMs=max(latencies,default=0),samples=len(latencies)))
     observations=[json.loads(x) for x in (root/'observations.jsonl').read_text().splitlines()] if (root/'observations.jsonl').exists() else []
     traces=[]
     for line in (root/'partner-integration-service.log').read_text().splitlines():
@@ -193,6 +202,7 @@ def report(root, expected, result):
     save(root/'traces.json',traces)
     controller=json.loads((root/'controller.json').read_text())
     removed=next((x['time'] for x in controller if x['action']=='fault_removed'),None)
+    input_done=next((x['time'] for x in controller if x['action']=='workload_input_done'),None)
     external_slow_done=max((x['effect_at'] for x in remote['effects'] if x['seller_id']=='slow'),default=0)
     slow_done=max((x['time'] for x in traces if x['stage']=='business_commit' and x.get('sellerId')=='slow'),default=external_slow_done)
     dbwait=[x.get('waitMs',0) for x in traces if x['stage']=='db_acquired']
@@ -200,7 +210,8 @@ def report(root, expected, result):
     errors=[x for x in traces if x['stage']=='external_error']
     service_samples=[x['service'] for x in observations if x.get('service')]
     metrics=dict(latency=rows,externalRecoveryMs=max(0,external_slow_done-removed) if removed else None,recoveryMs=max(0,slow_done-removed) if removed else None,
-        oldestBySeller={s:max((x.get('oldestMs',{}).get(s,0) for x in observations),default=0) for s in ['normal','slow']},
+        oldestBySeller=dict(normal=max((v for x in observations for k,v in x.get('oldestMs',{}).items() if k!='slow'),default=0),
+                            slow=max((x.get('oldestMs',{}).get('slow',0) for x in observations),default=0)),
         peakDbWaiting=max((x.get('dbWaiting',0) for x in service_samples),default=0),
         peakHeapUsed=max((x.get('heapUsed',0) for x in service_samples),default=0),
         peakActive=max((x.get('active',0) for x in service_samples),default=0),
@@ -227,38 +238,50 @@ def report(root, expected, result):
     metrics['infraMemorySamples']=len(memory_samples)
     metrics['externalSqliteBytes']=(root/'external.sqlite').stat().st_size + sum(x.stat().st_size for x in root.glob('external.sqlite-*'))
     metrics['rawEvidenceBytes']=sum(x.stat().st_size for x in root.rglob('*') if x.is_file())
+    final=json.loads((root/'final-observe.json').read_text())
+    metrics['retryTopicRecords']=final.get('retryLogEnd')
+    metrics['parkedEvents']=sum(1 for x in traces if x['stage']=='retry_parked')
+    metrics['circuitOpenRejections']=sum(1 for x in traces if x['stage']=='circuit_open')
+    metrics['externalRequests']=len(remote['attempts'])
+    # Market input keeps arriving after the fault is removed; measure the tail after the last input too.
+    metrics['slowDrainAfterInputMs']=max(0,external_slow_done-input_done) if input_done else None
     if (root/'input-times.json').exists():
         inputs=json.loads((root/'input-times.json').read_text())
         source_rows=[]
         for seller in ['normal','slow']:
-            times=[row['effect_at']-inputs[f'{row["order_id"]}/{row["seq"]}'] for row in remote['effects'] if row['seller_id']==seller]
+            times=[row['effect_at']-inputs[f'{row["order_id"]}/{row["seq"]}'] for row in remote['effects'] if (row['seller_id']=='slow')==(seller=='slow')]
             source_rows.append(dict(seller=seller,p95Ms=percentile(times,.95),p99Ms=percentile(times,.99)))
         metrics['sourceApiLatency']=source_rows
     save(root/'summary.json',metrics)
     return metrics
 
-def run_case(base, mode, scenario, repeat, observe=True):
-    root=new_root(base,f'{mode}-{scenario}-r{repeat}')
+def run_case(base, mode, scenario, repeat, observe=True, workload='pair', partitions=1):
+    label=f'{mode}-{scenario}' if workload=='pair' else f'{mode}-{scenario}-{workload}-p{partitions}'
+    root=new_root(base,f'{label}-r{repeat}')
     topic='partner-'+uuid.uuid4().hex[:16]; group=topic+'-group'
-    settings=dict(mode=mode,scenario=scenario,repeat=repeat,topic=topic,group=group,observe=observe,backlogLimit=8 if scenario=='backlog' else 200)
+    orders=24 if workload=='pair' else MARKET_ORDERS
+    settings=dict(mode=mode,scenario=scenario,repeat=repeat,topic=topic,group=group,observe=observe,backlogLimit=8 if scenario=='backlog' else 200,
+                  workload=workload,partitions=partitions,orders=orders,sellers=2 if workload=='pair' else MARKET_SELLERS)
     metadata(root,settings)
     sql('DELETE FROM inbox; DELETE FROM partner_effect; DELETE FROM partner_order') if sql('SHOW TABLES') else None
     mock=launch([sys.executable,str(REPO/'experiments/mock-partner-api/server.py'),'--database',str(root/'external.sqlite')],root/'mock.log')
-    extra=dict(PARTNER_MODE=mode,PARTNER_TOPIC=topic,PARTNER_GROUP=group)
+    extra=dict(PARTNER_MODE=mode,PARTNER_TOPIC=topic,PARTNER_GROUP=group,APP_PARTITIONS=partitions)
+    if workload!='pair':extra['APP_INPUT_BUDGET']=5000
     if scenario=='rebalance':extra['SPRING_KAFKA_CONSUMER_PROPERTIES_MAX_POLL_INTERVAL_MS']=2000
     if scenario=='backlog':extra['APP_BACKLOG_LIMIT']=8
     if not observe:extra['APP_TRACE_ENABLED']='false'
     service=None;collector=None; control=[]; threads=[]; expected=[]
     def record(action, **detail):
         control.append(dict(time=now(),action=action,**detail));save(root/'controller.json',control)
+    fault_seconds=12 if scenario=='hang' else 6
     def clear_fault():
-        time.sleep(6)
+        time.sleep(fault_seconds)
         http('http://localhost:8099/control',dict(sellerId='slow',delayMs=0,failureCount=0))
         record('fault_removed')
     try:
         wait_for(lambda:http('http://localhost:8099/health'),label='mock ready')
         service=java('partner-integration-service',root,extra)
-        wait_for(lambda:http('http://localhost:8090/observe').get('assigned',0)>0,label='partner assignment ready')
+        wait_for(lambda:http('http://localhost:8090/observe').get('assigned',0)>=(1 if mode=='inbox' else partitions),label='partner assignment ready')
         http('http://localhost:8090/load',[])
         # Allow assignment and capture 1s of fault-free data before injection.
         if observe:
@@ -267,13 +290,15 @@ def run_case(base, mode, scenario, repeat, observe=True):
         save(root/'before-load-observe.json',http('http://localhost:8090/observe'))
         save(root/'db-io-before.json',sql("SELECT OBJECT_NAME,COUNT_READ,COUNT_WRITE,COUNT_FETCH,COUNT_INSERT,COUNT_UPDATE,COUNT_DELETE FROM performance_schema.table_io_waits_summary_by_table WHERE OBJECT_SCHEMA='partner_db'"))
         record('workload_started')
-        expected=dataset(root.name,24,3)
+        expected=dataset(root.name,orders,3,workload)
         if scenario=='hotkey':
             for event in expected:event['sellerId']='slow' if event['orderId']==1 else 'normal'
         save(root/'expected.json',[])
-        if scenario in {'api','backlog','broker-kill','hotkey'}:
-            http('http://localhost:8099/control',dict(sellerId='slow',delayMs=600,failureCount=1000 if scenario=='hotkey' else 0))
-            record('fault_injected',kind='seller_api_delay',delayMs=600)
+        if scenario in {'api','backlog','broker-kill','hotkey','park-kill','hang'}:
+            # hang: the API answers just inside the 5s client timeout, as a stuck dependency does.
+            delay=3000 if scenario=='hang' else 600
+            http('http://localhost:8099/control',dict(sellerId='slow',delayMs=delay,failureCount=1000 if scenario=='hotkey' else 0))
+            record('fault_injected',kind='seller_api_delay',delayMs=delay,durationMs=fault_seconds*1000)
             thread=threading.Thread(target=clear_fault);thread.start();threads.append(thread)
         elif scenario=='retry':
             http('http://localhost:8099/control',dict(sellerId='slow',failureCount=3))
@@ -286,8 +311,8 @@ def run_case(base, mode, scenario, repeat, observe=True):
             http('http://localhost:8090/fault/db',dict(durationMs=3000))
             record('fault_injected',kind='shared_db_pool',durationMs=3000)
         gate=None
-        if scenario in {'ack-kill','ack-release','inbox-kill','worker-kill','external-kill','business-before-kill','inbox-before-kill','rebalance'}:
-            gate={'inbox-kill':'inbox_commit','worker-kill':'worker_commit','external-kill':'external_success','business-before-kill':'business_before_commit','inbox-before-kill':'inbox_before_commit'}.get(scenario,'business_commit')
+        if scenario in {'ack-kill','ack-release','inbox-kill','worker-kill','external-kill','business-before-kill','inbox-before-kill','rebalance','park-kill'}:
+            gate={'inbox-kill':'inbox_commit','worker-kill':'worker_commit','external-kill':'external_success','business-before-kill':'business_before_commit','inbox-before-kill':'inbox_before_commit','park-kill':'retry_published'}.get(scenario,'business_commit')
             (root/'hooks'/f'{gate}.arm').touch()
             record('gate_armed',gate=gate)
         placements=[]
@@ -298,7 +323,12 @@ def run_case(base, mode, scenario, repeat, observe=True):
             placements.extend(http('http://localhost:8090/load',expected[i:i+8]))
             time.sleep(.1)
         save(root/'placements.json',placements)
-        if {x['partition'] for x in placements}!={0}:raise AssertionError('Sellers did not share partition 0')
+        record('workload_input_done',events=len(expected))
+        if partitions==1 and {x['partition'] for x in placements}!={0}:raise AssertionError('Sellers did not share partition 0')
+        if partitions>1:
+            # The order key spreads the slow seller over every partition; record that, do not assume it.
+            slow_parts={x['partition'] for x in placements if x['sellerId']=='slow'}
+            if slow_parts!=set(range(partitions)):raise AssertionError(f'Slow seller not in every partition: {slow_parts}')
         if scenario=='broker-kill':
             record('broker_killed')
             command(COMPOSE+['kill','-s','SIGKILL','kafka'])
@@ -325,9 +355,9 @@ def run_case(base, mode, scenario, repeat, observe=True):
         if scenario=='redelivery':
             http('http://localhost:8090/load',expected)
             record('duplicate_input')
-        wait_for(lambda:len(sql('SELECT event_id FROM partner_effect'))==len(expected),timeout=90,label='all business effects')
+        wait_for(lambda:len(sql('SELECT event_id FROM partner_effect'))==len(expected),timeout=180,label='all business effects')
         for thread in threads:thread.join()
-        wait_for(lambda:http('http://localhost:8090/observe').get('committedRemaining')==0,timeout=15,label='broker commit drained')
+        wait_for(lambda:http('http://localhost:8090/observe').get('committedRemaining')==0,timeout=30,label='broker commit drained')
         time.sleep(.5)
         remote,effects,orders=snapshot(root)
         result=check(expected,remote,effects,orders);save(root/'checker.json',result)
@@ -347,15 +377,36 @@ def run_case(base, mode, scenario, repeat, observe=True):
         if collector and collector.poll() is None:(root/'collector.stop').touch();stop(collector)
         stop(service);stop(mock)
 
+NEW_MODES=['circuit-breaker','retry-topic','parallel-consumer']
+
+def comparison_suite(evidence):
+    # Pair workload keeps continuity with the first comparison.
+    for repeat in range(1,4):
+        for mode in NEW_MODES:run_case(evidence,mode,'api',repeat)
+    # 20 sellers: does adding partitions, a retry topic or a key-parallel library protect them?
+    for repeat in range(1,4):
+        for partitions in [1,4]:
+            for mode in MODES:run_case(evidence,mode,'api',repeat,workload='market',partitions=partitions)
+    for repeat in range(1,4):
+        for mode in ['sequential','retry-topic','parallel-consumer','inbox']:
+            run_case(evidence,mode,'hang',repeat,workload='market',partitions=4)
+    for mode in NEW_MODES:
+        for scenario in ['db','response-loss','redelivery','retry','hotkey','broker-kill','external-kill','business-before-kill','ack-kill']:
+            run_case(evidence,mode,scenario,1)
+    run_case(evidence,'retry-topic','park-kill',1)
+
 if __name__ == '__main__':
     p=argparse.ArgumentParser()
     p.add_argument('--evidence',default=str(DEFAULT_EVIDENCE))
     p.add_argument('--baseline',action='store_true')
-    p.add_argument('--mode',choices=['sequential','async','inbox'])
-    p.add_argument('--scenario',default='api',choices=['clean','api','db','ack-kill','ack-release','inbox-kill','worker-kill','external-kill','response-loss','redelivery','retry','backlog','business-before-kill','inbox-before-kill','rebalance','broker-kill','hotkey'])
+    p.add_argument('--mode',choices=MODES)
+    p.add_argument('--workload',default='pair',choices=['pair','market'])
+    p.add_argument('--partitions',type=int,default=1)
+    p.add_argument('--scenario',default='api',choices=['clean','api','db','ack-kill','ack-release','inbox-kill','worker-kill','external-kill','response-loss','redelivery','retry','backlog','business-before-kill','inbox-before-kill','rebalance','broker-kill','hotkey','park-kill','hang'])
     p.add_argument('--repeat',type=int,default=1)
     p.add_argument('--suite',action='store_true')
     p.add_argument('--no-observe',action='store_true')
+    p.add_argument('--comparison',action='store_true',help='standard remedies under the 20-seller workload')
     args=p.parse_args()
     evidence=Path(args.evidence).expanduser().resolve()
     validate_evidence_path(evidence)
@@ -374,7 +425,9 @@ if __name__ == '__main__':
                 for mode in ['sequential','async','inbox']:
                     run_case(evidence,mode,'clean',repeat)
                     run_case(evidence,mode,'clean',repeat,False)
-        else:run_case(evidence,args.mode or 'sequential',args.scenario,args.repeat,not args.no_observe)
+            comparison_suite(evidence)
+        elif args.comparison:comparison_suite(evidence)
+        else:run_case(evidence,args.mode or 'sequential',args.scenario,args.repeat,not args.no_observe,args.workload,args.partitions)
     finally:
         for process in PROCESSES:stop(process)
         for handle in HANDLES:handle.close()

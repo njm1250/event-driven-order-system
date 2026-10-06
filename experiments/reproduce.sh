@@ -15,6 +15,8 @@ python3 experiments/verify_migration.py --evidence "$evidence_dir/migration-veri
 python3 experiments/run.py --suite --evidence "$evidence_dir" | tee "$evidence_dir/suite.log"
 for mode in sequential async inbox; do
   python3 experiments/end_to_end.py --mode "$mode" --evidence "$evidence_dir"
+done
+for mode in sequential async inbox circuit-breaker retry-topic parallel-consumer; do
   python3 experiments/end_to_end.py --mode "$mode" --seller-fault --evidence "$evidence_dir"
 done
 for repetition in 1 2 3; do
@@ -32,3 +34,4 @@ python3 experiments/admission.py --evidence "$evidence_dir"
 python3 experiments/extra_cases.py --evidence "$evidence_dir"
 python3 experiments/analyze.py --evidence "$evidence_dir"
 python3 experiments/audit_local.py --evidence "$evidence_dir"
+python3 experiments/comparison_report.py --evidence "$evidence_dir"
