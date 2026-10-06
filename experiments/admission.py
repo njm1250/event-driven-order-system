@@ -44,11 +44,28 @@ try:
     wait_for(lambda:len(sql("SELECT event_id FROM outbox_event WHERE topic='partner-order-requests'",'order_db'))==200,timeout=45)
     expected=[json.loads(x['payload']) for x in sql("SELECT payload FROM outbox_event WHERE topic='partner-order-requests' ORDER BY id",'order_db')]
     save(root/'expected.json',expected)
+    first=orders[0]['orderId']
+    before=http(f'http://localhost:8081/orders/{first}')
+    for url,data,method in [(f'http://localhost:8081/orders/{first}',dict(quantity=3,price=120),'PATCH'),(f'http://localhost:8081/orders/{first}/cancel',{},'POST')]:
+        try:
+            http(url,data,method=method)
+            raise AssertionError('Mutation bypassed the full global budget')
+        except urllib.error.HTTPError as e:
+            if e.code!=409:raise
+            record('mutation_admission_rejected',method=method,status=e.code)
+        if http(f'http://localhost:8081/orders/{first}')!=before:raise AssertionError('Rejected mutation changed source state')
+    save(root/'rejected-mutation-source.json',before)
     http('http://localhost:8099/control',dict(sellerId='slow',failureCount=0));record('fault_removed')
     wait_for(lambda:len(sql('SELECT event_id FROM partner_effect'))==200,timeout=140)
+    readmitted=http('http://localhost:8081/orders',dict(productCode='SKU-1',quantity=2,price=100,sellerId='normal',runId=root.name))
+    record('admission_reopened',orderId=readmitted['orderId'])
+    wait_for(lambda:len(sql('SELECT event_id FROM partner_effect'))==201,timeout=30)
+    expected=[json.loads(x['payload']) for x in sql("SELECT payload FROM outbox_event WHERE topic='partner-order-requests' ORDER BY id",'order_db')]
+    if len(expected)!=201:raise AssertionError('Recovered admission did not produce exactly one more event')
+    save(root/'expected.json',expected)
     wait_for(lambda:http('http://localhost:8090/observe').get('committedRemaining')==0,timeout=10)
     remote,effects,states=snapshot(root);checked=check(expected,remote,effects,states)
-    checked['acceptedUnfinished']=200;checked['rejected201st']=True
+    checked['acceptedUnfinished']=200;checked['rejected201st']=True;checked['rejectedMutationRolledBack']=True;checked['postDrainReadmitted']=True
     save(root/'checker.json',checked)
     (root/'collector.stop').touch();collector.wait(timeout=8)
     report(root,expected,checked);record('completed',passed=checked['passed'])
