@@ -11,7 +11,12 @@ public final class BoundaryGate {
         Path root = Path.of(directory);
         try {
             if (!Files.exists(root.resolve(name + ".arm"))) return;
-            Files.writeString(root.resolve(name + ".reached"), eventId + "\n" + System.currentTimeMillis());
+            try {
+                Files.writeString(root.resolve(name + ".reached"), eventId + "\n" + System.currentTimeMillis(),
+                        StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE);
+            } catch (FileAlreadyExistsException alreadyReached) {
+                // Preserve the first arrival when several workers reach the same boundary.
+            }
             while (Files.exists(root.resolve(name + ".arm"))) Thread.sleep(50);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();

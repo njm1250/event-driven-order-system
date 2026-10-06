@@ -100,6 +100,8 @@ def metadata(root, settings):
         gitDiffSha256=hashlib.sha256(command(['git','diff']).encode()).hexdigest(),host=platform.platform(),
         jvm='-Xms64m -Xmx192m -XX:ActiveProcessorCount=4',jvmProcessorHint=4,workers=4,sellerConcurrency=2,dbPool=4,
         normalSellerSloMs=1500,backlogLimit=200,retainedRowsLimit=2000,rawObservationLimitBytes=8388608,
+        jarSha256=hashlib.sha256((REPO/'partner-integration-service/build/libs/app.jar').read_bytes()).hexdigest(),
+        scriptsSha256={str(x.relative_to(REPO)):hashlib.sha256(x.read_bytes()).hexdigest() for x in (REPO/'experiments').glob('*.py')},
         seed=1250,python=sys.version,startedAt=now()))
     (root/'code.diff').write_text(command(['git','diff']))
     (root/'compose.yaml').write_text((REPO/'docker-compose.experiment.yml').read_text())
@@ -107,6 +109,16 @@ def metadata(root, settings):
 
 def baseline(base):
     root=base/'baseline'; root.mkdir(exist_ok=True)
+    if not (root/'order.jar').exists():
+        source=root/'source';source.mkdir(exist_ok=True)
+        archive=subprocess.check_output(['git','archive','baseline-2026-10-06-d28e898'])
+        subprocess.run(['tar','-xf','-','-C',str(source)],input=archive,check=True)
+        with (root/'build.log').open('w') as output:
+            subprocess.run(['bash','gradlew','test',':order-service:bootJar',':inventory-service:bootJar',':notification-service:bootJar','--no-daemon'],cwd=source,stdout=output,stderr=subprocess.STDOUT,check=True)
+        import shutil
+        for module,target in [('order-service','order.jar'),('inventory-service','inventory.jar'),('notification-service','notification.jar')]:
+            shutil.copyfile(source/module/'build/libs/app.jar',root/target)
+    command(COMPOSE+['exec','-T','mysql','mysql','-uroot','-plabpassword','-e','DROP DATABASE order_db; CREATE DATABASE order_db; DROP DATABASE inventory_db; CREATE DATABASE inventory_db; DROP DATABASE notification_db; CREATE DATABASE notification_db;'],stderr=subprocess.DEVNULL)
     processes=[]
     try:
         for module,old in [('order-service','order.jar'),('inventory-service','inventory.jar'),('notification-service','notification.jar')]:
@@ -124,7 +136,7 @@ def baseline(base):
         orders=[http('http://localhost:8081/orders',dict(productCode='SKU-1',quantity=2,price=100)) for _ in range(4)]
         ids=[x['orderId'] for x in orders]
         states=wait_for(lambda: (lambda x:x if all(r['order_status']=='CONFIRMED' for r in x) and len(x)==4 else None)(sql('SELECT order_id,order_status FROM orders','order_db')),label='baseline confirmation')
-        save(root/'actual-run.json',dict(orders=orders,states=states,inventory=sql('SELECT * FROM inventories','inventory_db'),outbox=sql('SELECT event_id,status FROM outbox_event','order_db'),testCount=5,legacyRawResultsAvailable=False))
+        save(root/'actual-run.json',dict(orders=orders,states=states,inventory=sql('SELECT * FROM inventories','inventory_db'),outbox=sql('SELECT event_id,status FROM outbox_event','order_db'),testCount=5,legacyRawResultsAvailable=False,effectiveOutboxEnabled=True,originalDefaultOutboxEnabled=False))
     finally:
         for process in processes:stop(process)
         command(COMPOSE+['exec','-T','mysql','mysql','-uroot','-plabpassword','-e','DROP DATABASE order_db; CREATE DATABASE order_db; DROP DATABASE inventory_db; CREATE DATABASE inventory_db; DROP DATABASE notification_db; CREATE DATABASE notification_db;'],stderr=subprocess.DEVNULL)
@@ -147,9 +159,11 @@ def snapshot(root):
     orders=sql('SELECT * FROM partner_order ORDER BY seller_id,order_id')
     save(root/'remote.json',remote);save(root/'db-effects.json',effects);save(root/'db-orders.json',orders)
     save(root/'inbox.json',sql('SELECT event_id,seller_id,order_id,seq,state,attempts,received_at,done_at FROM inbox'))
+    save(root/'db-io-after.json',sql("SELECT OBJECT_NAME,COUNT_READ,COUNT_WRITE,COUNT_FETCH,COUNT_INSERT,COUNT_UPDATE,COUNT_DELETE FROM performance_schema.table_io_waits_summary_by_table WHERE OBJECT_SCHEMA='partner_db'"))
     sizes=sql("SELECT TABLE_NAME,DATA_LENGTH,INDEX_LENGTH,TABLE_ROWS FROM information_schema.TABLES WHERE TABLE_SCHEMA='partner_db'")
     save(root/'storage.json',sizes)
     save(root/'final-observe.json',http('http://localhost:8090/observe'))
+    (root/'infra-resources.jsonl').write_text(command(COMPOSE+['stats','--no-stream','--format','json']))
     return remote,effects,orders
 
 def percentile(values, quantile):
@@ -168,12 +182,13 @@ def report(root, expected, result):
     save(root/'traces.json',traces)
     controller=json.loads((root/'controller.json').read_text())
     removed=next((x['time'] for x in controller if x['action']=='fault_removed'),None)
-    slow_done=max((x['effect_at'] for x in remote['effects'] if x['seller_id']=='slow'),default=0)
+    external_slow_done=max((x['effect_at'] for x in remote['effects'] if x['seller_id']=='slow'),default=0)
+    slow_done=max((x['time'] for x in traces if x['stage']=='business_commit' and x.get('sellerId')=='slow'),default=external_slow_done)
     dbwait=[x.get('waitMs',0) for x in traces if x['stage']=='db_acquired']
     external=[x.get('durationMs',0) for x in traces if x['stage']=='external_result']
     errors=[x for x in traces if x['stage']=='external_error']
     service_samples=[x['service'] for x in observations if x.get('service')]
-    metrics=dict(latency=rows,recoveryMs=max(0,slow_done-removed) if removed else None,
+    metrics=dict(latency=rows,externalRecoveryMs=max(0,external_slow_done-removed) if removed else None,recoveryMs=max(0,slow_done-removed) if removed else None,
         oldestBySeller={s:max((x.get('oldestMs',{}).get(s,0) for x in observations),default=0) for s in ['normal','slow']},
         peakDbWaiting=max((x.get('dbWaiting',0) for x in service_samples),default=0),
         peakHeapUsed=max((x.get('heapUsed',0) for x in service_samples),default=0),
@@ -194,7 +209,7 @@ def report(root, expected, result):
 def run_case(base, mode, scenario, repeat, observe=True):
     root=new_root(base,f'{mode}-{scenario}-r{repeat}')
     topic='partner-'+uuid.uuid4().hex[:16]; group=topic+'-group'
-    settings=dict(mode=mode,scenario=scenario,repeat=repeat,topic=topic,group=group,observe=observe)
+    settings=dict(mode=mode,scenario=scenario,repeat=repeat,topic=topic,group=group,observe=observe,backlogLimit=8 if scenario=='backlog' else 200)
     metadata(root,settings)
     sql('DELETE FROM inbox; DELETE FROM partner_effect; DELETE FROM partner_order') if sql('SHOW TABLES') else None
     mock=launch([sys.executable,str(REPO/'experiments/mock-partner-api/server.py'),'--database',str(root/'external.sqlite')],root/'mock.log')
@@ -219,11 +234,14 @@ def run_case(base, mode, scenario, repeat, observe=True):
             collector=launch([sys.executable,str(REPO/'experiments/collector.py'),'--directory',str(root),'--pids',f'{service.pid},{mock.pid}'],root/'collector.log')
         time.sleep(1)
         save(root/'before-load-observe.json',http('http://localhost:8090/observe'))
+        save(root/'db-io-before.json',sql("SELECT OBJECT_NAME,COUNT_READ,COUNT_WRITE,COUNT_FETCH,COUNT_INSERT,COUNT_UPDATE,COUNT_DELETE FROM performance_schema.table_io_waits_summary_by_table WHERE OBJECT_SCHEMA='partner_db'"))
         record('workload_started')
         expected=dataset(root.name,24,3)
+        if scenario=='hotkey':
+            for event in expected:event['sellerId']='slow' if event['orderId']==1 else 'normal'
         save(root/'expected.json',[])
-        if scenario in {'api','backlog'}:
-            http('http://localhost:8099/control',dict(sellerId='slow',delayMs=600))
+        if scenario in {'api','backlog','broker-kill','hotkey'}:
+            http('http://localhost:8099/control',dict(sellerId='slow',delayMs=600,failureCount=1000 if scenario=='hotkey' else 0))
             record('fault_injected',kind='seller_api_delay',delayMs=600)
             thread=threading.Thread(target=clear_fault);thread.start();threads.append(thread)
         elif scenario=='retry':
@@ -249,6 +267,15 @@ def run_case(base, mode, scenario, repeat, observe=True):
             placements.extend(http('http://localhost:8090/load',expected[i:i+8]))
             time.sleep(.1)
         save(root/'placements.json',placements)
+        if {x['partition'] for x in placements}!={0}:raise AssertionError('Sellers did not share partition 0')
+        if scenario=='broker-kill':
+            record('broker_killed')
+            command(COMPOSE+['kill','-s','SIGKILL','kafka'])
+            time.sleep(2)
+            if not (root/'observations.jsonl').exists():raise AssertionError('Pre-crash observations missing')
+            command(COMPOSE+['start','kafka'])
+            wait_for(lambda:command(COMPOSE+['exec','-T','kafka','/opt/kafka/bin/kafka-broker-api-versions.sh','--bootstrap-server','localhost:9092']),timeout=30,label='broker restarted')
+            record('broker_restarted')
         if gate:
             reached=wait_for(lambda:(root/'hooks'/f'{gate}.reached').exists(),label='actual boundary')
             time.sleep(4 if scenario=='rebalance' else 2)
@@ -294,7 +321,7 @@ if __name__ == '__main__':
     p.add_argument('--evidence',default='/Users/jun/Desktop/experiment-evidence/2026-10-06')
     p.add_argument('--baseline',action='store_true')
     p.add_argument('--mode',choices=['sequential','async','inbox'])
-    p.add_argument('--scenario',default='api',choices=['clean','api','db','ack-kill','ack-release','inbox-kill','worker-kill','external-kill','response-loss','redelivery','retry','backlog','business-before-kill','inbox-before-kill','rebalance'])
+    p.add_argument('--scenario',default='api',choices=['clean','api','db','ack-kill','ack-release','inbox-kill','worker-kill','external-kill','response-loss','redelivery','retry','backlog','business-before-kill','inbox-before-kill','rebalance','broker-kill','hotkey'])
     p.add_argument('--repeat',type=int,default=1)
     p.add_argument('--suite',action='store_true')
     p.add_argument('--no-observe',action='store_true')

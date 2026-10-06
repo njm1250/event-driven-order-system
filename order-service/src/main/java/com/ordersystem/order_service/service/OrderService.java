@@ -67,6 +67,7 @@ public class OrderService {
     private Order createWithOutbox(Order order) {
         return transactionTemplate.execute(status -> {
             requireOutboxCapacity();
+            requireBusinessCapacity();
             Order savedOrder = orderRepository.save(order);
             OrderCreatedEvent event = buildEvent(savedOrder);
             outboxEventRepository.save(OutboxEvent.builder()
@@ -122,8 +123,15 @@ public class OrderService {
         if (outboxEventRepository.count() >= 2000) throw new IllegalStateException("Source Outbox retained-row limit reached; archive before admission");
     }
 
+    private void requireBusinessCapacity() {
+        if (outboxEventRepository.countUnfinishedBusiness() >= 200)
+            throw new IllegalStateException("Global unfinished business budget reached (200)");
+    }
+
     public void enqueuePartner(Order order, String operation) {
         requireOutboxCapacity();
+        // Confirmation converts a previously admitted PENDING order into its first partner request.
+        if (!operation.equals("CREATE")) requireBusinessCapacity();
         var event = new com.ordersystem.common.events.PartnerOrderEvent(java.util.UUID.randomUUID().toString(),
                 order.getRunId(), order.getSellerId(), order.getOrderId(), order.nextPartnerSequence(),
                 operation, System.currentTimeMillis(), 1, order.getQuantity(), order.getPrice());

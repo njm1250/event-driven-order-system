@@ -1,3 +1,4 @@
+USE partner_db;
 CREATE TABLE IF NOT EXISTS inbox (
  event_id VARCHAR(64) PRIMARY KEY, run_id VARCHAR(64) NOT NULL, seller_id VARCHAR(32) NOT NULL,
  order_id BIGINT NOT NULL, seq INT NOT NULL, payload TEXT NOT NULL,

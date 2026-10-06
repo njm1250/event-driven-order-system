@@ -30,6 +30,7 @@ services:
       - mysql-data:/var/lib/mysql
       - ./docker/mysql-init:/docker-entrypoint-initdb.d:ro
       - ./experiments/migrations/001-source-schema.sql:/docker-entrypoint-initdb.d/z001-source-schema.sql:ro
+      - ./partner-integration-service/src/main/resources/schema.sql:/docker-entrypoint-initdb.d/z002-partner-schema.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "mysqladmin ping -h localhost -uroot -p${MYSQL_ROOT_PASSWORD:-labpassword} >/dev/null 2>&1"]
       interval: 10s

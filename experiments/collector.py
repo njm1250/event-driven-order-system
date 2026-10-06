@@ -51,6 +51,14 @@ if __name__ == '__main__':
                 item['oldestMs'] = ages
             except Exception as e:
                 item['externalError'] = str(e)
+            if samples % 4 == 0:
+                try:
+                    repository=Path(__file__).resolve().parents[1]
+                    query="SELECT (SELECT COUNT(*) FROM partner_effect) AS business_done,(SELECT COUNT(*) FROM inbox WHERE state<>'DONE') AS inbox_pending,(SELECT COUNT(*) FROM inbox) AS inbox_retained;"
+                    raw=subprocess.check_output(['docker','compose','-p','partner-isolation','-f',str(repository/'docker-compose.experiment.yml'),'exec','-T','mysql','mysql','-uroot','-plabpassword','--batch','partner_db','-e',query],text=True,stderr=subprocess.DEVNULL,timeout=3)
+                    lines=raw.splitlines()
+                    item['independentDb']={k:int(v) for k,v in zip(lines[0].split('\t'),lines[1].split('\t'))}
+                except Exception as e:item['independentDbError']=str(e)
             if args.pids:
                 try:
                     rss=subprocess.check_output(['ps','-o','rss=','-p',args.pids],text=True)

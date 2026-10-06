@@ -73,7 +73,17 @@ def run(base, mode, boundary='none', concurrent_duplicate=False):
             http(f'http://localhost:8081/orders/{o["orderId"]}',dict(quantity=3,price=120),method='PATCH')
             http(f'http://localhost:8081/orders/{o["orderId"]}/cancel',{},method='POST')
         records=sql("SELECT payload FROM outbox_event WHERE topic='partner-order-requests' ORDER BY id",'order_db')
-        expected=[json.loads(x['payload']) for x in records];save(root/'expected.json',expected)
+        expected=[]
+        source_sellers={o['orderId']:'slow' if i%2==0 else 'normal' for i,o in enumerate(orders)}
+        for row in records:
+            emitted=json.loads(row['payload'])
+            seq=emitted['sequence']
+            wanted=dict(emitted, sellerId=source_sellers[emitted['orderId']],runId=root.name,
+                        operation={1:'CREATE',2:'CHANGE',3:'CANCEL'}[seq],
+                        quantity=2 if seq==1 else 3,price=100.0 if seq==1 else 120.0,schemaVersion=1)
+            if emitted!=wanted:raise AssertionError('Source Outbox payload differs from the HTTP input contract')
+            expected.append(wanted)
+        save(root/'expected.json',expected)
         if len(expected)!=18:raise AssertionError('Source did not create exactly three partner events per order')
         wait_for(lambda:len(sql('SELECT event_id FROM partner_effect'))==18,timeout=60,label='end-to-end effects')
         wait_for(lambda:http('http://localhost:8090/observe').get('committedRemaining')==0,timeout=15,label='end-to-end offset drain')
@@ -84,7 +94,7 @@ def run(base, mode, boundary='none', concurrent_duplicate=False):
         final_orders=sql('SELECT order_id,order_status,partner_sequence,quantity,price FROM orders','order_db')
         checked['sourceStock']=stock;checked['sourceHistoryCount']=len(history)
         if stock!=988 or len(history)!=6 or any(x['delta']!=-2 for x in history):checked['errors'].append('Inventory effects duplicated or missing')
-        if any(x['order_status']!='CANCELLED' or x['partner_sequence']!=3 for x in final_orders):checked['errors'].append('Source sequence/final state mismatch')
+        if any(x['order_status']!='CANCELLED' or x['partner_sequence']!=3 or x['quantity']!=3 or x['price']!=120 for x in final_orders):checked['errors'].append('Source sequence/final state mismatch')
         checked['passed']=not checked['errors']
         save(root/'source-final.json',dict(orders=final_orders,history=history,stock=stock))
         save(root/'checker.json',checked)

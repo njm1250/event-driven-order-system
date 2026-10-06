@@ -200,6 +200,7 @@ public class PartnerApplication {
             while(!budget.isEmpty() && budget.peekFirst()<=now-retryWindow) budget.removeFirst();
             if(budget.size()>=retryBudget) return false;
             budget.addLast(now);
+            trace("retry_admitted",task,"admittedAt",now,"windowMs",retryWindow,"budget",retryBudget);
         }
         active.incrementAndGet(); activeKeys.add(task.event.key()); activeSellers.merge(seller,1,Integer::sum); return true;
     }
@@ -272,9 +273,23 @@ public class PartnerApplication {
         return result;
     }
     @PostMapping("/load")
-    public List<Map<String,Object>> load(@RequestBody List<PartnerOrderEvent> events) throws Exception {
+    public synchronized List<Map<String,Object>> load(@RequestBody List<PartnerOrderEvent> events) throws Exception {
         List<Map<String,Object>> result=new ArrayList<>();
         producer.partitionsFor(topic);
+        if (!events.isEmpty()) {
+            try(var admin=AdminClient.create(Map.of(AdminClientConfig.BOOTSTRAP_SERVERS_CONFIG,bootstrap))) {
+                long end=admin.listOffsets(Map.of(new TopicPartition(topic,0),OffsetSpec.latest())).all()
+                        .get(2,TimeUnit.SECONDS).get(new TopicPartition(topic,0)).offset();
+                long done;
+                // Input controller accounting must not consume the worker pool being faulted.
+                try(var accounting=java.sql.DriverManager.getConnection(pool.getJdbcUrl(),pool.getUsername(),pool.getPassword());
+                    var statement=accounting.createStatement();
+                    var resultSet=statement.executeQuery("SELECT COUNT(*) FROM partner_effect")) {
+                    resultSet.next(); done=resultSet.getLong(1);
+                }
+                if (end-done+events.size()>200) throw new IllegalStateException("Global input backlog budget (200) reached");
+            }
+        }
         if (events.size()>backlogLimit) throw new IllegalArgumentException("Input batch exceeds capacity");
         for(var e:events) {
             e.validate(); var sent=producer.send(topic,0,e.key(),json.writeValueAsString(e)).get(5,TimeUnit.SECONDS).getRecordMetadata();
