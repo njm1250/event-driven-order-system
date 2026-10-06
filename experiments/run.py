@@ -171,6 +171,7 @@ def snapshot(root):
     save(root/'db-io-after.json',sql("SELECT OBJECT_NAME,COUNT_READ,COUNT_WRITE,COUNT_FETCH,COUNT_INSERT,COUNT_UPDATE,COUNT_DELETE FROM performance_schema.table_io_waits_summary_by_table WHERE OBJECT_SCHEMA='partner_db'"))
     sizes=sql("SELECT TABLE_NAME,DATA_LENGTH,INDEX_LENGTH,TABLE_ROWS FROM information_schema.TABLES WHERE TABLE_SCHEMA='partner_db'")
     save(root/'storage.json',sizes)
+    save(root/'storage-live.json',sql("SELECT (SELECT COUNT(*) FROM inbox) AS inbox_rows,(SELECT COALESCE(SUM(OCTET_LENGTH(payload)),0) FROM inbox) AS inbox_payload_bytes,(SELECT COUNT(*) FROM partner_effect) AS effect_rows,(SELECT COUNT(*) FROM partner_order) AS order_rows"))
     save(root/'final-observe.json',http('http://localhost:8090/observe'))
     (root/'infra-resources.jsonl').write_text(command(COMPOSE+['stats','--no-stream','--format','json']))
     return remote,effects,orders
