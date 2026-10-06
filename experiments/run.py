@@ -22,6 +22,7 @@ REPO = Path(__file__).resolve().parents[1]
 COMPOSE = ['docker','compose','-p','partner-isolation','-f',str(REPO/'docker-compose.experiment.yml')]
 PROCESSES = []
 HANDLES = []
+JAVA_RUNTIME = None
 
 def now():
     return int(time.time()*1000)
@@ -101,13 +102,15 @@ def new_root(base, name):
     return root
 
 def metadata(root, settings):
+    global JAVA_RUNTIME
+    if JAVA_RUNTIME is None:JAVA_RUNTIME = subprocess.check_output(['java','-version'],stderr=subprocess.STDOUT,text=True).strip()
     save(root/'manifest.json',dict(settings=settings,gitCommit=command(['git','rev-parse','HEAD']).strip(),
         gitDiffSha256=hashlib.sha256(command(['git','diff']).encode()).hexdigest(),host=platform.platform(),
         jvm='-Xms64m -Xmx192m -XX:ActiveProcessorCount=4',jvmProcessorHint=4,workers=4,sellerConcurrency=2,dbPool=4,
         normalSellerSloMs=1500,backlogLimit=200,retainedRowsLimit=2000,rawObservationLimitBytes=8388608,
         jarSha256=hashlib.sha256((REPO/'partner-integration-service/build/libs/app.jar').read_bytes()).hexdigest(),
         scriptsSha256={str(x.relative_to(REPO)):hashlib.sha256(x.read_bytes()).hexdigest() for x in (REPO/'experiments').glob('*.py')},
-        seed=1250,python=sys.version,startedAt=now()))
+        seed=1250,python=sys.version,javaRuntime=JAVA_RUNTIME,startedAt=now()))
     (root/'code.diff').write_text(command(['git','diff']))
     (root/'compose.yaml').write_text((REPO/'docker-compose.experiment.yml').read_text())
     (root/'effective.properties').write_text((REPO/'partner-integration-service/src/main/resources/application.properties').read_text())
