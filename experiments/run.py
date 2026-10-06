@@ -200,7 +200,13 @@ def report(root, expected, result):
         observerSampleP95Ms=percentile([x['sampleMs'] for x in observations],.95),
         measuredNormalSloPassed=(rows[0]['p99Ms'] or float('inf'))<=1500,checker=result)
     before=json.loads((root/'before-load-observe.json').read_text()) if (root/'before-load-observe.json').exists() else {}
-    metrics['workloadCpuNanos']=metrics['lastCpuNanos']-before.get('cpuNanos',0)
+    cpu_by_instance={}
+    for sample in service_samples+[json.loads((root/'final-observe.json').read_text())]:
+        if sample.get('instance'):
+            cpu_by_instance[sample['instance']]=max(cpu_by_instance.get(sample['instance'],0),sample.get('cpuNanos',0))
+    metrics['sampledWorkloadCpuLowerBoundNanos']=sum(cpu_by_instance.values())-before.get('cpuNanos',0)
+    metrics['workloadCpuNanos']=metrics['sampledWorkloadCpuLowerBoundNanos'] if len(cpu_by_instance)==1 else None
+    metrics['cpuInstances']=len(cpu_by_instance)
     metrics['externalSqliteBytes']=(root/'external.sqlite').stat().st_size + sum(x.stat().st_size for x in root.glob('external.sqlite-*'))
     metrics['rawEvidenceBytes']=sum(x.stat().st_size for x in root.rglob('*') if x.is_file())
     save(root/'summary.json',metrics)

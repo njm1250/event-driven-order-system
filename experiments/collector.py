@@ -26,6 +26,8 @@ if __name__ == '__main__':
     end_capture = None
     samples = 0
     lost = 0
+    late_samples = 0
+    missed_schedule_slots = 0
     io_bytes = 0
     start = time.monotonic()
     with (root/'observations.jsonl').open('w') as out:
@@ -73,11 +75,15 @@ if __name__ == '__main__':
                 out.flush()
                 io_bytes += len(encoded.encode())
             ring.append(item)
+            while ring and item['time']-ring[0]['time']>30000:ring.popleft()
+            if item['sampleMs']>args.interval*1000:
+                late_samples+=1
+                missed_schedule_slots+=max(0,int(item['sampleMs']/(args.interval*1000))-1)
             samples += 1
             service = item.get('service') or {}
             anomaly = max(item.get('oldestMs',{}).values(),default=0) >= 2000 or service.get('dbWaiting',0)>0
             if detected is None and anomaly:
-                detected = item['time']
+                detected = int(time.time()*1000)
                 incident = root/'incident-before.json'
                 incident.write_text(json.dumps(list(ring),indent=2))
                 with incident.open('rb') as f:
@@ -89,6 +95,6 @@ if __name__ == '__main__':
                     incident.write(encoded)
             time.sleep(max(0,args.interval-(time.monotonic()-begin)))
     usage = resource.getrusage(resource.RUSAGE_SELF)
-    (root/'collector-cost.json').write_text(json.dumps(dict(samples=samples,droppedSamples=lost,bytes=io_bytes,
+    (root/'collector-cost.json').write_text(json.dumps(dict(samples=samples,droppedSamples=lost,lateSamples=late_samples,missedScheduleSlots=missed_schedule_slots,bytes=io_bytes,
         cpuSeconds=usage.ru_utime+usage.ru_stime,maxRssNative=usage.ru_maxrss,elapsedSeconds=time.monotonic()-start,
         intervalSeconds=args.interval,preWindowSeconds=30,postWindowSeconds=5),indent=2))
