@@ -107,7 +107,7 @@ def metadata(root, settings):
     save(root/'manifest.json',dict(settings=settings,gitCommit=command(['git','rev-parse','HEAD']).strip(),
         gitDiffSha256=hashlib.sha256(command(['git','diff']).encode()).hexdigest(),host=platform.platform(),
         jvm='-Xms64m -Xmx192m -XX:ActiveProcessorCount=4',jvmProcessorHint=4,workers=4,sellerConcurrency=2,dbPool=4,
-        normalSellerSloMs=1500,backlogLimit=200,retainedRowsLimit=2000,rawObservationLimitBytes=8388608,
+        normalSellerSloMs=1500,backlogLimit=settings.get('backlogLimit',200),retainedRowsLimit=2000,rawObservationLimitBytes=8388608,
         jarSha256=hashlib.sha256((REPO/'partner-integration-service/build/libs/app.jar').read_bytes()).hexdigest(),
         jarSha256ByModule={module:hashlib.sha256((REPO/module/'build/libs/app.jar').read_bytes()).hexdigest() for module in ['order-service','inventory-service','partner-integration-service']},
         scriptsSha256={str(x.relative_to(REPO)):hashlib.sha256(x.read_bytes()).hexdigest() for x in (REPO/'experiments').glob('*.py')},
