@@ -28,7 +28,7 @@ def check(expected, remote, db_effects, db_orders):
         grouped[key].append(row['seq'])
         event = expected_by_id.get(row['event_id'])
         if event:
-            for out, source in [('seq','sequence'), ('operation','operation'), ('quantity','quantity'), ('price','price')]:
+            for out, source in [('seller_id','sellerId'), ('order_id','orderId'), ('run_id','runId'), ('seq','sequence'), ('operation','operation'), ('quantity','quantity'), ('price','price')]:
                 if row[out] != event[source]:
                     errors.append(f'external payload mismatch {row["event_id"]}/{out}')
     for key, sequence in grouped.items():
@@ -41,7 +41,7 @@ def check(expected, remote, db_effects, db_orders):
     for row in db_effects:
         event = expected_by_id.get(row['event_id'])
         if event:
-            for out, source in [('seq','sequence'), ('operation','operation'), ('quantity','quantity'), ('price','price')]:
+            for out, source in [('seller_id','sellerId'), ('order_id','orderId'), ('run_id','runId'), ('seq','sequence'), ('operation','operation'), ('quantity','quantity'), ('price','price')]:
                 if row[out] != event[source]:
                     errors.append(f'business DB payload mismatch {row["event_id"]}/{out}')
     for label, orders in [('external',remote['orders']), ('business DB',db_orders)]:

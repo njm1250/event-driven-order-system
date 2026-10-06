@@ -109,6 +109,8 @@ def run(base, mode, boundary='none', concurrent_duplicate=False, poll_ms=100, se
             expected.append(wanted)
         save(root/'expected.json',expected)
         if len(expected)!=18:raise AssertionError('Source did not create exactly three partner events per order')
+        if {(e['orderId'],e['sequence']) for e in expected}!={(o['orderId'],s) for o in orders for s in [1,2,3]}:
+            raise AssertionError('Source events do not cover every HTTP order and operation')
         wait_for(lambda:len(sql('SELECT event_id FROM partner_effect'))==18,timeout=60,label='end-to-end effects')
         wait_for(lambda:http('http://localhost:8090/observe').get('committedRemaining')==0,timeout=15,label='end-to-end offset drain')
         if seller_fault:recovery.join()
