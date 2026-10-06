@@ -38,8 +38,8 @@ def run(base, mode, boundary='none', concurrent_duplicate=False, poll_ms=100, se
         wait_for(lambda:http('http://localhost:8090/observe'))
         if (REPO/'experiments/migrations/001-source-schema.sql').exists():
             command(COMPOSE+['exec','-T','mysql','mysql','-uroot','-plabpassword'],input=(REPO/'experiments/migrations/001-source-schema.sql').read_text(),stderr=__import__('subprocess').DEVNULL)
-        order=java('order-service',root,dict(APP_OUTBOX_POLL_MS=poll_ms));procs.append(order)
-        inventory=java('inventory-service',root,dict(APP_OUTBOX_POLL_MS=poll_ms));procs.append(inventory)
+        order_process=java('order-service',root,dict(APP_OUTBOX_POLL_MS=poll_ms));procs.append(order_process)
+        inventory_process=java('inventory-service',root,dict(APP_OUTBOX_POLL_MS=poll_ms));procs.append(inventory_process)
         wait_for(ready)
         wait_for(lambda:'partitions assigned: [inventory-order-created-0]' in (root/'inventory-service.log').read_text(),label='inventory assigned')
         wait_for(lambda:'partitions assigned: [order-stock-update-0]' in (root/'order-service.log').read_text(),label='order result assigned')
@@ -87,7 +87,7 @@ def run(base, mode, boundary='none', concurrent_duplicate=False, poll_ms=100, se
             (root/'at-boundary-broker-records.jsonl').write_text(captured.stdout)
             event=(root/'hooks'/f'{boundary}.reached').read_text().splitlines()[0]
             if event not in captured.stdout:raise AssertionError('Gate event absent from actual broker records')
-            target=order if boundary=='broker_ack' else inventory
+            target=order_process if boundary=='broker_ack' else inventory_process
             stop(target,kill=True);record('process_killed',gate=boundary,eventId=event)
             (root/'hooks'/f'{boundary}.arm').unlink()
             target=java('order-service' if boundary=='broker_ack' else 'inventory-service',root,dict(APP_OUTBOX_POLL_MS=poll_ms));procs.append(target)
