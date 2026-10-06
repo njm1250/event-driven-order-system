@@ -28,9 +28,12 @@ def check(expected, remote, db_effects, db_orders):
         grouped[key].append(row['seq'])
         event = expected_by_id.get(row['event_id'])
         if event:
-            for out, source in [('seller_id','sellerId'), ('order_id','orderId'), ('run_id','runId'), ('seq','sequence'), ('operation','operation'), ('quantity','quantity'), ('price','price')]:
+            for out, source in [('seller_id','sellerId'), ('order_id','orderId'), ('seq','sequence'), ('operation','operation'), ('quantity','quantity'), ('price','price')]:
                 if row[out] != event[source]:
                     errors.append(f'external payload mismatch {row["event_id"]}/{out}')
+            try:
+                if json.loads(row['payload'])!=event:errors.append(f'external serialized request mismatch {row["event_id"]}')
+            except (KeyError,TypeError,ValueError):errors.append(f'external serialized request unavailable {row["event_id"]}')
     for key, sequence in grouped.items():
         wanted = sorted(e['sequence'] for e in expected if (e['sellerId'],e['orderId']) == key)
         if sequence != wanted:

@@ -31,6 +31,7 @@ for mode in ['sequential','async','inbox']:
         d=root/item['run']
         r=subprocess.run(['python3',str(repo/'experiments/verify_budgets.py'),str(d)],capture_output=True,text=True)
         if r.returncode:errors.append(dict(run=d.name,budget=r.stdout+r.stderr))
+        if mode in ['async','inbox'] and r.returncode==0 and not json.loads(r.stdout)['differentOrdersOverlapped']:errors.append(f'{d.name}: no independent evidence of different-order parallelism')
     if mode in ['sequential','async']:
         for scenario in ['ack-kill','ack-release','external-kill','business-before-kill','rebalance']:require(scenario+'-'+mode,mode,scenario)
 for scenario in ['inbox-kill','worker-kill','external-kill','business-before-kill','inbox-before-kill','backlog']:require(scenario+'-inbox','inbox',scenario)
