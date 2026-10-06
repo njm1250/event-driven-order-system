@@ -21,7 +21,9 @@ if __name__ == '__main__':
     p.add_argument('--pids',default='')
     p.add_argument('--interval', type=float, default=0.25)
     args = p.parse_args()
-    root = Path(args.directory)
+    root = Path(args.directory).resolve()
+    repository = Path(__file__).resolve().parents[1]
+    if root==repository or repository in root.parents:raise SystemExit('Evidence must be external')
     ring = collections.deque(maxlen=120)  # 30s at 250ms; sampled values, raw traces separately retained.
     detected = None
     end_capture = None

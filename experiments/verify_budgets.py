@@ -5,6 +5,8 @@ import collections
 import json
 from pathlib import Path
 p=argparse.ArgumentParser();p.add_argument('directory');a=p.parse_args();root=Path(a.directory)
+root=root.resolve();repo=Path(__file__).resolve().parents[1]
+if root==repo or repo in root.parents:raise SystemExit('Evidence must be external')
 remote=json.loads((root/'remote.json').read_text());manifest=json.loads((root/'manifest.json').read_text())
 errors=[];overlap={};parallel_orders=False;same_order_overlaps=0
 for seller in {'normal','slow'}:
