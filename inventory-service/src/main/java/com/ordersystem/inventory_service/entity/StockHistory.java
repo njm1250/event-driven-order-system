@@ -10,8 +10,7 @@ import java.time.LocalDateTime;
 
 /**
  * 재고 차감 처리 이력. 차감과 같은 트랜잭션으로 기록되어
- * 멱등 판정(eventId 중복 확인)의 기준이 된다. 운영 수준에서는 애플리케이션
- * 확인에 더해 event_id UNIQUE 제약을 최후 방어선으로 두는 것이 맞다.
+ * 멱등 판정(eventId 중복 확인)의 기준이 된다. event_id UNIQUE는 동시 중복을 막는 최후 방어선이다.
  */
 @Entity
 @Getter
@@ -23,7 +22,7 @@ public class StockHistory {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
-    @Column(name = "event_id", length = 36, nullable = false)
+    @Column(name = "event_id", length = 36, nullable = false, unique = true)
     private String eventId;
 
     @Column(name = "order_id", nullable = false)

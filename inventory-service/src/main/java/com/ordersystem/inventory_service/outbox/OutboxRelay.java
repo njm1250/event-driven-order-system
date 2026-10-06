@@ -1,4 +1,4 @@
-package com.ordersystem.order_service.outbox;
+package com.ordersystem.inventory_service.outbox;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
@@ -38,7 +38,7 @@ public class OutboxRelay {
                 Object event = objectMapper.readValue(record.getPayload(), resolveEventType(record.getEventType()));
                 kafkaTemplate.send(record.getTopic(), record.getAggregateId(), event)
                         .get(5, TimeUnit.SECONDS);
-                com.ordersystem.common.experiment.BoundaryGate.hit("broker_ack", record.getEventId());
+                com.ordersystem.common.experiment.BoundaryGate.hit("inventory_broker_ack", record.getEventId());
                 record.markSent();
                 outboxEventRepository.save(record);
             } catch (InterruptedException e) {

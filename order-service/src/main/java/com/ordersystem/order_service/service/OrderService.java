@@ -32,7 +32,7 @@ public class OrderService {
                         OutboxEventRepository outboxEventRepository,
                         ObjectMapper objectMapper,
                         PlatformTransactionManager transactionManager,
-                        @Value("${app.outbox-enabled:false}") boolean outboxEnabled) {
+                        @Value("${app.outbox-enabled:true}") boolean outboxEnabled) {
         this.orderProducer = orderProducer;
         this.orderRepository = orderRepository;
         this.outboxEventRepository = outboxEventRepository;
@@ -42,7 +42,12 @@ public class OrderService {
     }
 
     public Order createOrder(String productCode, int quantity, double price) {
+        return createOrder(productCode, quantity, price, "legacy", "api");
+    }
+
+    public Order createOrder(String productCode, int quantity, double price, String sellerId, String runId) {
         Order order = Order.builder()
+                .sellerId(sellerId).runId(runId)
                 .productCode(productCode)
                 .quantity(quantity)
                 .price(price)
@@ -61,6 +66,7 @@ public class OrderService {
      */
     private Order createWithOutbox(Order order) {
         return transactionTemplate.execute(status -> {
+            requireOutboxCapacity();
             Order savedOrder = orderRepository.save(order);
             OrderCreatedEvent event = buildEvent(savedOrder);
             outboxEventRepository.save(OutboxEvent.builder()
@@ -100,6 +106,32 @@ public class OrderService {
         } catch (JsonProcessingException e) {
             throw new UncheckedIOException(e);
         }
+    }
+
+    public Order mutate(Long id, int quantity, double price, boolean cancel) {
+        return transactionTemplate.execute(status -> {
+            Order order = orderRepository.findLockedByOrderId(id).orElseThrow(() -> new IllegalStateException("Order missing"));
+            if (cancel) order.cancelForPartner(); else order.changeForPartner(quantity, price);
+            enqueuePartner(order, cancel ? "CANCEL" : "CHANGE");
+            return order;
+        });
+    }
+
+    private void requireOutboxCapacity() {
+        if (outboxEventRepository.lockCapacity() == null) throw new IllegalStateException("Outbox capacity row missing");
+        if (outboxEventRepository.count() >= 2000) throw new IllegalStateException("Source Outbox retained-row limit reached; archive before admission");
+    }
+
+    public void enqueuePartner(Order order, String operation) {
+        requireOutboxCapacity();
+        var event = new com.ordersystem.common.events.PartnerOrderEvent(java.util.UUID.randomUUID().toString(),
+                order.getRunId(), order.getSellerId(), order.getOrderId(), order.nextPartnerSequence(),
+                operation, System.currentTimeMillis(), 1, order.getQuantity(), order.getPrice());
+        try {
+            outboxEventRepository.save(OutboxEvent.builder().eventId(event.eventId()).aggregateId(event.key())
+                    .topic(Topics.PARTNER_REQUESTS).eventType(event.getClass().getName())
+                    .payload(objectMapper.writeValueAsString(event)).build());
+        } catch (JsonProcessingException e) { throw new UncheckedIOException(e); }
     }
 
     public Optional<Order> findOrder(Long orderId) {

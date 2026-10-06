@@ -38,3 +38,11 @@ out/
 .vscode/
 
 .env
+
+# Experiment evidence is external; protect against accidental output paths.
+results/
+evidence/
+__pycache__/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm

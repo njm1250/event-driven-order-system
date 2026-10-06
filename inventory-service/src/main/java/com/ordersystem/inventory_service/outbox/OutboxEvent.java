@@ -1,4 +1,4 @@
-package com.ordersystem.order_service.outbox;
+package com.ordersystem.inventory_service.outbox;
 
 import jakarta.persistence.*;
 import lombok.Builder;

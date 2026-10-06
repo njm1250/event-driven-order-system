@@ -17,27 +17,30 @@ import org.springframework.transaction.annotation.Transactional;
 public class OrderConsumer {
 
     private final OrderRepository orderRepository;
+    private final OrderService orderService;
 
-    @KafkaListener(topics = Topics.STOCK_UPDATED, groupId = "order-group")
+    @KafkaListener(topics = Topics.STOCK_UPDATED, groupId = "${spring.kafka.consumer.group-id}")
     @Transactional
     public void handleStockUpdatedEvent(OrderStockUpdatedEvent event) {
-        Order order = orderRepository.findById(event.getOrderId()).orElse(null);
+        Order order = orderRepository.findLockedByOrderId(event.getOrderId()).orElse(null);
         if (order == null) {
             // 재시도해도 없는 주문은 생기지 않으므로 전파하지 않고 넘어간다
             log.warn("Order {} not found; skipping event {}", event.getOrderId(), event.getEventId());
             return;
         }
 
-        if (!order.confirm()) {
+        if (order.confirm()) {
+            orderService.enqueuePartner(order, "CREATE");
+        } else {
             log.info("Order {} already {}; skipping duplicate/out-of-order event {}",
                     order.getOrderId(), order.getOrderStatus(), event.getEventId());
         }
     }
 
-    @KafkaListener(topics = Topics.STOCK_UPDATE_FAILED, groupId = "order-group")
+    @KafkaListener(topics = Topics.STOCK_UPDATE_FAILED, groupId = "${spring.kafka.consumer.group-id}")
     @Transactional
     public void handleStockUpdateFailedEvent(OrderStockUpdateFailedEvent event) {
-        Order order = orderRepository.findById(event.getOrderId()).orElse(null);
+        Order order = orderRepository.findLockedByOrderId(event.getOrderId()).orElse(null);
         if (order == null) {
             log.warn("Order {} not found; skipping event {}", event.getOrderId(), event.getEventId());
             return;

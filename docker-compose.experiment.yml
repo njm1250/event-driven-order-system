@@ -1,0 +1,37 @@
+services:
+  kafka:
+    image: apache/kafka:3.9.1
+    cpus: 2
+    mem_limit: 1g
+    ports: ["127.0.0.1:39092:39092"]
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_LISTENERS: INTERNAL://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093,EXTERNAL://0.0.0.0:39092
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:9092,EXTERNAL://localhost:39092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_HEAP_OPTS: -Xms256m -Xmx512m
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 >/dev/null 2>&1"]
+      interval: 3s
+      retries: 40
+    logging: {driver: json-file, options: {max-size: "20m", max-file: "2"}}
+  mysql:
+    image: mysql:8.4
+    cpus: 2
+    mem_limit: 1g
+    ports: ["127.0.0.1:13306:3306"]
+    environment:
+      MYSQL_ROOT_PASSWORD: labpassword
+    tmpfs: /var/lib/mysql
+    volumes: ["./experiments/mysql-init.sql:/docker-entrypoint-initdb.d/init.sql:ro", "./experiments/migrations/001-source-schema.sql:/docker-entrypoint-initdb.d/z001-source-schema.sql:ro"]
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h localhost -uroot -plabpassword >/dev/null 2>&1"]
+      interval: 3s
+      retries: 40
+    logging: {driver: json-file, options: {max-size: "20m", max-file: "2"}}
