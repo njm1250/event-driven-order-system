@@ -126,7 +126,7 @@ def run(base, mode, boundary='none', concurrent_duplicate=False, poll_ms=100, se
         history=sql('SELECT event_id,order_id,delta FROM stock_history','inventory_db')
         final_orders=sql('SELECT order_id,order_status,partner_sequence,quantity,price FROM orders','order_db')
         checked['sourceStock']=stock;checked['sourceHistoryCount']=len(history)
-        if stock!=988 or len(history)!=6 or any(x['delta']!=-2 for x in history):checked['errors'].append('Inventory effects duplicated or missing')
+        if stock!=988 or len(history)!=6 or any(x['delta']!=-2 for x in history) or {x['order_id'] for x in history}!={o['orderId'] for o in orders}:checked['errors'].append('Inventory effects duplicated, missing or attributed to another order')
         if any(x['order_status']!='CANCELLED' or x['partner_sequence']!=3 or x['quantity']!=3 or x['price']!=120 for x in final_orders):checked['errors'].append('Source sequence/final state mismatch')
         checked['passed']=not checked['errors']
         save(root/'source-final.json',dict(orders=final_orders,history=history,stock=stock))

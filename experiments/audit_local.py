@@ -21,6 +21,11 @@ for item in items:
     result=check(json.loads((d/'expected.json').read_text()),json.loads((d/'remote.json').read_text()),json.loads((d/'db-effects.json').read_text()),json.loads((d/'db-orders.json').read_text()))
     replayed.append(dict(run=d.name,**result))
     if not result['passed']:errors.append(dict(run=d.name,errors=result['errors']))
+    if item['settings'].get('scenario')=='end-to-end':
+        source=json.loads((d/'source-final.json').read_text())
+        wanted={x['orderId'] for x in json.loads((d/'source-input.json').read_text())}
+        if len(source['history'])!=len(wanted) or {x['order_id'] for x in source['history']}!=wanted or {x['order_id'] for x in source['orders']}!=wanted:
+            errors.append(f'{d.name}: source inventory history does not cover each HTTP order exactly once')
 for mode in ['sequential','async','inbox']:
     api=require('api-'+mode,mode,'api',3,observe=True)
     for observed in [True,False]:require(f'clean-{mode}-{observed}',mode,'clean',3,observe=observed)
