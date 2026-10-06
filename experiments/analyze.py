@@ -4,6 +4,7 @@ import argparse
 import collections
 import json
 import statistics
+import hashlib
 from pathlib import Path
 
 p=argparse.ArgumentParser();p.add_argument('--evidence',required=True);args=p.parse_args()
@@ -50,7 +51,8 @@ for directory in sorted(root.iterdir()):
     detection=json.loads((directory/'detection.json').read_text()) if (directory/'detection.json').exists() else None
     detected_ms=detection['detectedAt']-injected.get('reachedAt',injected['time']) if detection and injected else None
     # Strictly non-causal description: overlapping wait indicators require the control removal evidence.
-    lines=[f'# 관측 기반 가설 기록: {directory.name}', '',
+    analysis_id=hashlib.sha256(directory.name.encode()).hexdigest()[:12]
+    lines=[f'# 관측 기반 가설 기록: 실험 {analysis_id}', '',
         '자동 규칙이 수집 자료를 먼저 판정하고 이후 제어기와 대조했다. 사람의 블라인드 RCA나 원인 탐색 시간을 측정한 실험은 아니다.', '',
         '| 가설 | 예상 근거 · 수집 방법 | 실제 관측 | 판정 |', '| --- | --- | --- | --- |',
         f'| 판매처 API 지연 | slow 외부 호출 500ms 이상, normal은 증가하지 않음. external_result trace | {delayed} | {verdict["seller_api_delay"]} |',
