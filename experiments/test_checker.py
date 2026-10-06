@@ -7,7 +7,9 @@ class CheckerTest(unittest.TestCase):
         self.expected=[dict(eventId="e1",runId="r",sellerId="s",orderId=1,sequence=1,operation="CREATE",quantity=2,price=3)]
         self.row=dict(event_id="e1",run_id="r",seller_id="s",order_id=1,seq=1,operation="CREATE",quantity=2,price=3)
         self.row['payload']=json.dumps(self.expected[0])
-        self.remote=dict(effects=[self.row],orders=[self.row],attempts=[])
+        external=dict(self.row)
+        external.pop('run_id')  # The API ledger retains runId in its original payload only.
+        self.remote=dict(effects=[external],orders=[self.row],attempts=[])
     def test_correct_effect(self):
         self.assertTrue(check(self.expected,self.remote,[self.row],[self.row])["passed"])
     def test_missing_effect(self):
