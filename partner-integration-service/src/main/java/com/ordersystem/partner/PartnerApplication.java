@@ -61,6 +61,7 @@ public class PartnerApplication {
     final Map<String,Integer> activeSellers = new HashMap<>();
     final Map<String,Deque<Long>> retries = new HashMap<>();
     final Set<String> activeKeys = new HashSet<>();
+    final LinkedHashSet<String> finishedInbox = new LinkedHashSet<>();
     final Map<Integer,Long> receivedOffsets = new ConcurrentHashMap<>();
     final AtomicInteger active = new AtomicInteger();
     final AtomicLong traceCount = new AtomicLong();
@@ -192,9 +193,12 @@ public class PartnerApplication {
         });
         trace("business_commit",task);
     }
-    synchronized boolean allowed(Task task,long now) {
+    synchronized boolean allowed(Task task) {
+        long now=System.currentTimeMillis();
         String seller=task.event.sellerId();
         if(active.get()>=workers || activeKeys.contains(task.event.key()) || activeSellers.getOrDefault(seller,0)>=sellerConcurrency || task.next>now) return false;
+        // A ready-row snapshot can outlive the worker's commit and release of its key.
+        if(mode.equals("inbox") && finishedInbox.contains(task.event.eventId())) return false;
         if(task.attempts>0) {
             Deque<Long> budget=retries.computeIfAbsent(seller,k->new ArrayDeque<>());
             while(!budget.isEmpty() && budget.peekFirst()<=now-retryWindow) budget.removeFirst();
@@ -219,7 +223,7 @@ public class PartnerApplication {
                 }
             } else synchronized(this) { for(var queue:pending.values()) if(!queue.isEmpty()) candidates.add(queue.peekFirst()); }
             for(Task task:candidates) {
-                if(!allowed(task,System.currentTimeMillis())) continue;
+                if(!allowed(task)) continue;
                 executor.execute(()->runTask(task));
             }
         } catch(Exception e) { trace("dispatch_error",null,"error",e.toString()); }
@@ -230,6 +234,10 @@ public class PartnerApplication {
             task.attempts++;
             if(mode.equals("inbox")) db.update("UPDATE inbox SET attempts=? WHERE event_id=?",task.attempts,task.event.eventId());
             perform(task);
+            if(mode.equals("inbox")) synchronized(this) {
+                finishedInbox.add(task.event.eventId());
+                if(finishedInbox.size()>retainedLimit) finishedInbox.remove(finishedInbox.iterator().next());
+            }
             BoundaryGate.hit(mode.equals("inbox")?"worker_commit":"business_commit",task.event.eventId());
             if(task.ack!=null && task.epoch==generation.get()) {task.ack.acknowledge(); trace("ack_requested",task,"meaning","business completed");}
             success=true;

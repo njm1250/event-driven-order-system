@@ -25,6 +25,12 @@ for seller in {'normal','slow'}:
             if first['order_id']==second['order_id'] and first['event_id']!=second['event_id'] and first['start_at']<second['start_at']<(first['end_at'] or 0):same_order_overlaps+=1
 if same_order_overlaps:errors.append(f'{same_order_overlaps} overlapping operations of the same order')
 traces=json.loads((root/'traces.json').read_text())
+committed={}
+for t in traces:
+    key=(t.get('instance'),t.get('eventId'))
+    if t['stage']=='business_commit':committed[key]=t['time']
+    if manifest['settings'].get('mode')=='inbox' and t['stage']=='retry_admitted' and key in committed:
+        errors.append(f'Completed inbox event consumed retry budget: {t["eventId"]}')
 # Admission is authoritative for the rolling retry budget; network requests can start later.
 starts=collections.defaultdict(list)
 for t in traces:
