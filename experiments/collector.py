@@ -9,6 +9,7 @@ import subprocess
 import time
 import urllib.request
 from pathlib import Path
+from docker_metrics import DockerMetrics, collector_peak_rss_bytes
 
 def get(url):
     with urllib.request.urlopen(url, timeout=3) as response:
@@ -30,6 +31,12 @@ if __name__ == '__main__':
     missed_schedule_slots = 0
     io_bytes = 0
     start = time.monotonic()
+    try:
+        infra = DockerMetrics()
+        infra_error = None
+    except Exception as error:
+        infra = None
+        infra_error = str(error)
     with (root/'observations.jsonl').open('w') as out:
         while not (root/'collector.stop').exists():
             begin = time.monotonic()
@@ -54,6 +61,9 @@ if __name__ == '__main__':
             except Exception as e:
                 item['externalError'] = str(e)
             if samples % 4 == 0:
+                if infra:item['infra'] = infra.sample()
+                elif infra_error:item['infraError'] = infra_error
+                item['collectorPeakRssBytes'] = collector_peak_rss_bytes()
                 try:
                     repository=Path(__file__).resolve().parents[1]
                     query="SELECT (SELECT COUNT(*) FROM partner_effect) AS business_done,(SELECT COUNT(*) FROM inbox WHERE state<>'DONE') AS inbox_pending,(SELECT COUNT(*) FROM inbox) AS inbox_retained;"
@@ -97,6 +107,7 @@ if __name__ == '__main__':
                     incident.write(encoded)
             time.sleep(max(0,args.interval-(time.monotonic()-begin)))
     usage = resource.getrusage(resource.RUSAGE_SELF)
+    children = resource.getrusage(resource.RUSAGE_CHILDREN)
     (root/'collector-cost.json').write_text(json.dumps(dict(samples=samples,droppedSamples=lost,lateSamples=late_samples,missedScheduleSlots=missed_schedule_slots,bytes=io_bytes,
-        cpuSeconds=usage.ru_utime+usage.ru_stime,maxRssNative=usage.ru_maxrss,maxRssUnit='bytes' if __import__('sys').platform=='darwin' else 'KiB',elapsedSeconds=time.monotonic()-start,
+        cpuSeconds=usage.ru_utime+usage.ru_stime,childCpuSeconds=children.ru_utime+children.ru_stime,maxRssNative=usage.ru_maxrss,maxRssUnit='bytes' if __import__('sys').platform=='darwin' else 'KiB',elapsedSeconds=time.monotonic()-start,
         intervalSeconds=args.interval,preWindowSeconds=30,postWindowSeconds=5),indent=2))

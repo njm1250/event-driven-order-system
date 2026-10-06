@@ -212,6 +212,13 @@ def report(root, expected, result):
     metrics['sampledWorkloadCpuLowerBoundNanos']=sum(cpu_by_instance.values())-before.get('cpuNanos',0)
     metrics['workloadCpuNanos']=metrics['sampledWorkloadCpuLowerBoundNanos'] if len(cpu_by_instance)==1 else None
     metrics['cpuInstances']=len(cpu_by_instance)
+    memory_samples=[]
+    for item in observations:
+        containers=item.get('infra',{})
+        if item.get('processRssKiB') is not None and len(containers)==2 and all(x.get('memoryWithoutInactiveFileBytes') is not None for x in containers.values()):
+            memory_samples.append(item['processRssKiB']*1024+item.get('collectorPeakRssBytes',0)+sum(x['memoryWithoutInactiveFileBytes'] for x in containers.values()))
+    metrics['peakMeasuredStackMemoryBytes']=max(memory_samples) if memory_samples else None
+    metrics['infraMemorySamples']=len(memory_samples)
     metrics['externalSqliteBytes']=(root/'external.sqlite').stat().st_size + sum(x.stat().st_size for x in root.glob('external.sqlite-*'))
     metrics['rawEvidenceBytes']=sum(x.stat().st_size for x in root.rglob('*') if x.is_file())
     if (root/'input-times.json').exists():
