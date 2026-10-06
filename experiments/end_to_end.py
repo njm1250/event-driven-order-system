@@ -21,10 +21,10 @@ def reset_source():
     sql('DELETE FROM inbox; DELETE FROM partner_effect; DELETE FROM partner_order')
     time.sleep(1)
 
-def run(base, mode, boundary='none', concurrent_duplicate=False):
+def run(base, mode, boundary='none', concurrent_duplicate=False, poll_ms=100, seller_fault=False):
     reset_source()
     root=new_root(base,f'e2e-{mode}-{boundary}'+('-concurrent' if concurrent_duplicate else ''))
-    metadata(root,dict(mode=mode,scenario='end-to-end',boundary=boundary,concurrentDuplicate=concurrent_duplicate))
+    metadata(root,dict(mode=mode,scenario='end-to-end',boundary=boundary,concurrentDuplicate=concurrent_duplicate,sourcePollMs=poll_ms,sellerFault=seller_fault))
     procs=[];controller=[];collector=None
     def record(action, **extra):
         controller.append(dict(time=now(),action=action,**extra));save(root/'controller.json',controller)
@@ -38,9 +38,11 @@ def run(base, mode, boundary='none', concurrent_duplicate=False):
         wait_for(lambda:http('http://localhost:8090/observe'))
         if (REPO/'experiments/migrations/001-source-schema.sql').exists():
             command(COMPOSE+['exec','-T','mysql','mysql','-uroot','-plabpassword'],input=(REPO/'experiments/migrations/001-source-schema.sql').read_text(),stderr=__import__('subprocess').DEVNULL)
-        order=java('order-service',root);procs.append(order)
-        inventory=java('inventory-service',root);procs.append(inventory)
+        order=java('order-service',root,dict(APP_OUTBOX_POLL_MS=poll_ms));procs.append(order)
+        inventory=java('inventory-service',root,dict(APP_OUTBOX_POLL_MS=poll_ms));procs.append(inventory)
         wait_for(ready)
+        wait_for(lambda:'partitions assigned: [inventory-order-created-0]' in (root/'inventory-service.log').read_text(),label='inventory assigned')
+        wait_for(lambda:'partitions assigned: [order-stock-update-0]' in (root/'order-service.log').read_text(),label='order result assigned')
         wait_for(lambda:sql('SHOW TABLES','inventory_db'))
         sql("INSERT INTO inventories(product_cd,stock_quantity,version) VALUES('SKU-1',1000,0)",'inventory_db')
         if concurrent_duplicate:
@@ -50,6 +52,17 @@ def run(base, mode, boundary='none', concurrent_duplicate=False):
             time.sleep(3)
         collector=launch([sys.executable,str(REPO/'experiments/collector.py'),'--directory',str(root)],root/'collector.log')
         if boundary!='none':(root/'hooks'/f'{boundary}.arm').touch();record('gate_armed',gate=boundary)
+        if seller_fault:
+            import threading
+            http('http://localhost:8099/control',dict(sellerId='slow',delayMs=600))
+            record('fault_injected',kind='seller_api_delay',delayMs=600)
+            def clear():
+                time.sleep(6)
+                http('http://localhost:8099/control',dict(sellerId='slow',delayMs=0))
+                record('fault_removed')
+            recovery=threading.Thread(target=clear);recovery.start()
+        save(root/'before-load-observe.json',http('http://localhost:8090/observe'))
+        save(root/'source-db-io-before.json',sql("SELECT OBJECT_SCHEMA,OBJECT_NAME,COUNT_READ,COUNT_WRITE,COUNT_INSERT,COUNT_UPDATE FROM performance_schema.table_io_waits_summary_by_table WHERE OBJECT_SCHEMA IN ('order_db','inventory_db')"))
         record('workload_started')
         orders=[];input_times={}
         for i in range(6):
@@ -74,7 +87,7 @@ def run(base, mode, boundary='none', concurrent_duplicate=False):
             target=order if boundary=='broker_ack' else inventory
             stop(target,kill=True);record('process_killed',gate=boundary,eventId=event)
             (root/'hooks'/f'{boundary}.arm').unlink()
-            target=java('order-service' if boundary=='broker_ack' else 'inventory-service',root);procs.append(target)
+            target=java('order-service' if boundary=='broker_ack' else 'inventory-service',root,dict(APP_OUTBOX_POLL_MS=poll_ms));procs.append(target)
             record('process_restarted')
         wait_for(lambda: all(http(f'http://localhost:8081/orders/{o["orderId"]}')['status']=='CONFIRMED' for o in orders),timeout=60,label='source confirmations')
         for o in orders:
@@ -98,7 +111,9 @@ def run(base, mode, boundary='none', concurrent_duplicate=False):
         if len(expected)!=18:raise AssertionError('Source did not create exactly three partner events per order')
         wait_for(lambda:len(sql('SELECT event_id FROM partner_effect'))==18,timeout=60,label='end-to-end effects')
         wait_for(lambda:http('http://localhost:8090/observe').get('committedRemaining')==0,timeout=15,label='end-to-end offset drain')
+        if seller_fault:recovery.join()
         remote,effects,states=snapshot(root)
+        save(root/'source-db-io-after.json',sql("SELECT OBJECT_SCHEMA,OBJECT_NAME,COUNT_READ,COUNT_WRITE,COUNT_INSERT,COUNT_UPDATE FROM performance_schema.table_io_waits_summary_by_table WHERE OBJECT_SCHEMA IN ('order_db','inventory_db')"))
         checked=check(expected,remote,effects,states)
         stock=sql("SELECT stock_quantity FROM inventories WHERE product_cd='SKU-1'",'inventory_db')[0]['stock_quantity']
         history=sql('SELECT event_id,order_id,delta FROM stock_history','inventory_db')
@@ -133,10 +148,10 @@ def run(base, mode, boundary='none', concurrent_duplicate=False):
         for p in reversed(procs):stop(p)
 
 if __name__=='__main__':
-    p=argparse.ArgumentParser();p.add_argument('--evidence',default='/Users/jun/Desktop/experiment-evidence/2026-10-06');p.add_argument('--mode',default='inbox',choices=['sequential','async','inbox']);p.add_argument('--boundary',default='none',choices=['none','broker_ack','inventory_broker_ack']);p.add_argument('--concurrent-duplicate',action='store_true');args=p.parse_args()
+    p=argparse.ArgumentParser();p.add_argument('--evidence',default='/Users/jun/Desktop/experiment-evidence/2026-10-06');p.add_argument('--mode',default='inbox',choices=['sequential','async','inbox']);p.add_argument('--boundary',default='none',choices=['none','broker_ack','inventory_broker_ack']);p.add_argument('--poll-ms',type=int,default=100);p.add_argument('--seller-fault',action='store_true');p.add_argument('--concurrent-duplicate',action='store_true');args=p.parse_args()
     path=Path(args.evidence).resolve()
     if path==REPO or REPO in path.parents:raise SystemExit('Evidence must be outside repository')
-    try:run(path,args.mode,args.boundary,args.concurrent_duplicate)
+    try:run(path,args.mode,args.boundary,args.concurrent_duplicate,args.poll_ms,args.seller_fault)
     finally:
         for p in PROCESSES:stop(p)
         for f in HANDLES:f.close()

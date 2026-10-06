@@ -112,6 +112,7 @@ public class OrderService {
     public Order mutate(Long id, int quantity, double price, boolean cancel) {
         return transactionTemplate.execute(status -> {
             Order order = orderRepository.findLockedByOrderId(id).orElseThrow(() -> new IllegalStateException("Order missing"));
+            if (order.getPartnerSequence() == 0) throw new IllegalStateException("Legacy order requires partner CREATE backfill before change/cancel");
             if (cancel) order.cancelForPartner(); else order.changeForPartner(quantity, price);
             enqueuePartner(order, cancel ? "CANCEL" : "CHANGE");
             return order;

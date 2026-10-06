@@ -23,7 +23,7 @@ try:
     for repetition in [1,2]:
         subprocess.run([sys.executable,str(REPO/'experiments/migrate.py'),'--evidence',str(root/f'apply-{repetition}'),'--order-db',order_db,'--inventory-db',inventory_db],check=True)
     orders=sql('SELECT * FROM orders',order_db);history=sql('SELECT * FROM stock_history',inventory_db)
-    assert orders[0]['seller_id']=='legacy' and orders[0]['run_id']=='api' and orders[0]['quantity']==2 and orders[0]['price']==100
+    assert orders[0]['seller_id']=='legacy' and orders[0]['run_id']=='api' and orders[0]['quantity']==2 and orders[0]['price']==100 and orders[0]['version']=='0'
     assert len(history)==1 and history[0]['delta']==-2
     assert sql('SELECT COUNT(*) n FROM outbox_event',order_db)[0]['n']=='1'
     save(root/'migration-check.json',dict(passed=True,orders=orders,history=history,

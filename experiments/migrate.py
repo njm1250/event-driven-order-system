@@ -29,10 +29,13 @@ subprocess.run(prefix, input=(REPO/'experiments/migrations/001-source-schema.sql
 existing=query(a.order_db,'SHOW COLUMNS FROM orders')
 for column,definition in [('seller_id',"VARCHAR(255) NOT NULL DEFAULT 'legacy'"),('run_id',"VARCHAR(255) DEFAULT 'api'"),('partner_sequence','INT NOT NULL DEFAULT 0'),('version','BIGINT')]:
     if column+'\t' not in existing:query(a.order_db,f'ALTER TABLE orders ADD COLUMN {column} {definition}')
+query(a.order_db,'UPDATE orders SET version=0 WHERE version IS NULL')
 for database,table in [(a.order_db,'outbox_event'),(a.inventory_db,'stock_history'),(a.inventory_db,'outbox_event')]:
     duplicates=query(database,f'SELECT event_id,COUNT(*) n FROM {table} GROUP BY event_id HAVING n>1')
     if len(duplicates.splitlines())>1:raise SystemExit(f'{database}.{table}: existing duplicate IDs need review, migration refused')
     indexes=query(database,f'SHOW INDEX FROM {table}')
-    unique_event=any('\t0\t' in line and '\tevent_id\t' in line for line in indexes.splitlines()[1:])
+    lines=indexes.splitlines()
+    index_rows=[dict(zip(lines[0].split('\t'),line.split('\t'))) for line in lines[1:]]
+    unique_event=any(row['Non_unique']=='0' and row['Column_name']=='event_id' for row in index_rows)
     if not unique_event:query(database,f'ALTER TABLE {table} ADD CONSTRAINT uq_{table}_event UNIQUE(event_id)')
 print('Explicit schema migration completed')

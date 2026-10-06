@@ -29,7 +29,7 @@ public class OutboxRelay {
     private final KafkaTemplate<String, Object> kafkaTemplate;
     private final ObjectMapper objectMapper;
 
-    @Scheduled(fixedDelay = 1000)
+    @Scheduled(fixedDelayString = "${app.outbox-poll-ms:100}")
     public void relayPendingEvents() {
         List<OutboxEvent> batch = outboxEventRepository.findTop100ByStatusOrderByIdAsc(OutboxEvent.Status.PENDING);
 

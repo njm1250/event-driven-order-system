@@ -61,9 +61,11 @@ if __name__ == '__main__':
                     lines=raw.splitlines()
                     item['independentDb']={k:int(v) for k,v in zip(lines[0].split('\t'),lines[1].split('\t'))}
                 except Exception as e:item['independentDbError']=str(e)
-            if args.pids:
+            pids=args.pids
+            if (root/'process-pids.json').exists():pids=','.join(str(x['pid']) for x in json.loads((root/'process-pids.json').read_text()))
+            if pids:
                 try:
-                    rss=subprocess.check_output(['ps','-o','rss=','-p',args.pids],text=True)
+                    rss=subprocess.check_output(['ps','-o','rss=','-p',pids],text=True)
                     item['processRssKiB']=sum(int(x) for x in rss.split())
                 except Exception as e:item['rssError']=str(e)
             item['sampleMs'] = (time.monotonic()-begin)*1000
@@ -96,5 +98,5 @@ if __name__ == '__main__':
             time.sleep(max(0,args.interval-(time.monotonic()-begin)))
     usage = resource.getrusage(resource.RUSAGE_SELF)
     (root/'collector-cost.json').write_text(json.dumps(dict(samples=samples,droppedSamples=lost,lateSamples=late_samples,missedScheduleSlots=missed_schedule_slots,bytes=io_bytes,
-        cpuSeconds=usage.ru_utime+usage.ru_stime,maxRssNative=usage.ru_maxrss,elapsedSeconds=time.monotonic()-start,
+        cpuSeconds=usage.ru_utime+usage.ru_stime,maxRssNative=usage.ru_maxrss,maxRssUnit='bytes' if __import__('sys').platform=='darwin' else 'KiB',elapsedSeconds=time.monotonic()-start,
         intervalSeconds=args.interval,preWindowSeconds=30,postWindowSeconds=5),indent=2))

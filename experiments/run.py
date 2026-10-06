@@ -71,6 +71,11 @@ def launch(args, logfile, env=None):
     HANDLES.append(handle)
     process=subprocess.Popen(args,cwd=REPO,stdout=handle,stderr=subprocess.STDOUT,env=env)
     PROCESSES.append(process)
+    if args[0]=='java' or any('mock-partner-api/server.py' in str(x) for x in args):
+        registry=logfile.parent/'process-pids.json'
+        records=json.loads(registry.read_text()) if registry.exists() else []
+        records.append(dict(pid=process.pid,command=args[0],log=logfile.name,startedAt=now()))
+        save(registry,records)
     return process
 
 def stop(process, kill=False):
