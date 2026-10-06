@@ -5,9 +5,10 @@ import json
 import subprocess
 import sys
 from pathlib import Path
+from evidence_paths import validate_evidence_path
 from run import REPO, COMPOSE, command, sql, save
 p=argparse.ArgumentParser();p.add_argument('--evidence',required=True);a=p.parse_args();root=Path(a.evidence).resolve()
-if root==REPO or REPO in root.parents:raise SystemExit('Evidence must be external')
+validate_evidence_path(root)
 root.mkdir(parents=True,exist_ok=True)
 order_db='migration_check_order';inventory_db='migration_check_inventory'
 try:

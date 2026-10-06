@@ -3,9 +3,10 @@
 import argparse
 import subprocess
 from pathlib import Path
+from evidence_paths import validate_evidence_path
 from run import run_case, PROCESSES, HANDLES, stop, REPO
 p=argparse.ArgumentParser();p.add_argument('--evidence',required=True);a=p.parse_args();root=Path(a.evidence).resolve()
-if root==REPO or REPO in root.parents:raise SystemExit('Evidence must be external')
+validate_evidence_path(root)
 try:
     for mode in ['sequential','async','inbox']:
         for scenario in ['hotkey','broker-kill','retry']:

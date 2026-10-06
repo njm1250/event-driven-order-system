@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 repo_dir="$(cd "$(dirname "$0")/.." && pwd)"
-evidence_dir="${KAFKA_EVIDENCE_DIR:-$HOME/Desktop/experiment-evidence/$(date +%Y-%m-%d)}"
+evidence_dir="${KAFKA_EVIDENCE_DIR:-$repo_dir/experiment-evidence/$(date +%Y-%m-%d)}"
+python3 "$repo_dir/experiments/evidence_paths.py" "$evidence_dir"
 mkdir -p "$evidence_dir"
 cd "$repo_dir"
 cleanup() { docker compose -p partner-isolation -f docker-compose.experiment.yml down > "$evidence_dir/cleanup.log" 2>&1; }

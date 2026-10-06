@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
-"""Complete the local comparison after preserved development runs; evidence stays external."""
+"""Complete the local comparison after preserved development runs; evidence stays untracked."""
 import argparse
 import subprocess
 import sys
 from pathlib import Path
+from evidence_paths import validate_evidence_path
 from run import REPO, run_case, PROCESSES, HANDLES, stop
 from end_to_end import run as end_to_end
 p=argparse.ArgumentParser();p.add_argument('--evidence',required=True);a=p.parse_args();root=Path(a.evidence).resolve()
-if root==REPO or REPO in root.parents:raise SystemExit('Evidence must be external')
+validate_evidence_path(root)
 try:
     for repetition in range(5,8):
         for mode in ['sequential','async','inbox']:run_case(root,mode,'api',repetition)

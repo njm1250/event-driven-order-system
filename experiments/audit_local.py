@@ -5,11 +5,12 @@ import json
 import subprocess
 import time
 from pathlib import Path
+from evidence_paths import validate_evidence_path
 from checker import check
 
 p=argparse.ArgumentParser();p.add_argument('--evidence',required=True);a=p.parse_args();root=Path(a.evidence).resolve()
 repo=Path(__file__).resolve().parents[1]
-if root==repo or repo in root.parents:raise SystemExit('Evidence must be external')
+validate_evidence_path(root)
 items=json.loads((root/'index.json').read_text());errors=[];replayed=[];requirements={}
 def require(name,mode,scenario,count=1,**settings):
     matches=[x for x in items if x['settings'].get('mode')==mode and x['settings'].get('scenario')==scenario and x['metrics']['checker']['passed'] and all(x['settings'].get(k)==v for k,v in settings.items())]

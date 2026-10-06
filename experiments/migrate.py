@@ -4,6 +4,7 @@ import argparse
 import json
 import subprocess
 from pathlib import Path
+from evidence_paths import validate_evidence_path
 
 REPO=Path(__file__).resolve().parents[1]
 p=argparse.ArgumentParser()
@@ -16,7 +17,7 @@ a=p.parse_args()
 import re
 if not all(re.fullmatch('[a-zA-Z0-9_]+',x) for x in [a.order_db,a.inventory_db]):raise SystemExit('Invalid database identifier')
 root=Path(a.evidence).resolve()
-if root==REPO or REPO in root.parents:raise SystemExit('Evidence must be external')
+validate_evidence_path(root)
 root.mkdir(parents=True,exist_ok=True)
 commands=[]
 prefix=['docker','compose','-p',a.project,'-f',a.compose,'exec','-T','mysql','mysql','-uroot','-plabpassword','--batch']

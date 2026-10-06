@@ -9,6 +9,7 @@ import subprocess
 import time
 import urllib.request
 from pathlib import Path
+from evidence_paths import validate_evidence_path
 from docker_metrics import DockerMetrics, collector_peak_rss_bytes
 
 def get(url):
@@ -23,7 +24,7 @@ if __name__ == '__main__':
     args = p.parse_args()
     root = Path(args.directory).resolve()
     repository = Path(__file__).resolve().parents[1]
-    if root==repository or repository in root.parents:raise SystemExit('Evidence must be external')
+    validate_evidence_path(root)
     ring = collections.deque(maxlen=120)  # 30s at 250ms; sampled values, raw traces separately retained.
     detected = None
     end_capture = None

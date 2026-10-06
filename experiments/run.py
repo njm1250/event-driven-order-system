@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Local reproducible Kafka/MySQL experiment controller. All evidence must live outside Git."""
+"""Local reproducible Kafka/MySQL experiment controller. All evidence must remain untracked by Git."""
 import argparse
 import hashlib
 import json
@@ -16,6 +16,7 @@ import urllib.request
 import urllib.error
 import uuid
 from pathlib import Path
+from evidence_paths import validate_evidence_path, DEFAULT_EVIDENCE
 from checker import check
 
 REPO = Path(__file__).resolve().parents[1]
@@ -348,7 +349,7 @@ def run_case(base, mode, scenario, repeat, observe=True):
 
 if __name__ == '__main__':
     p=argparse.ArgumentParser()
-    p.add_argument('--evidence',default='/Users/jun/Desktop/experiment-evidence/2026-10-06')
+    p.add_argument('--evidence',default=str(DEFAULT_EVIDENCE))
     p.add_argument('--baseline',action='store_true')
     p.add_argument('--mode',choices=['sequential','async','inbox'])
     p.add_argument('--scenario',default='api',choices=['clean','api','db','ack-kill','ack-release','inbox-kill','worker-kill','external-kill','response-loss','redelivery','retry','backlog','business-before-kill','inbox-before-kill','rebalance','broker-kill','hotkey'])
@@ -357,7 +358,7 @@ if __name__ == '__main__':
     p.add_argument('--no-observe',action='store_true')
     args=p.parse_args()
     evidence=Path(args.evidence).expanduser().resolve()
-    if evidence==REPO or REPO in evidence.parents:raise SystemExit('Evidence must be outside the Git repository')
+    validate_evidence_path(evidence)
     evidence.mkdir(parents=True,exist_ok=True)
     try:
         if args.baseline:baseline(evidence)

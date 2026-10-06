@@ -6,11 +6,12 @@ import json
 import statistics
 import hashlib
 from pathlib import Path
+from evidence_paths import validate_evidence_path
 
 p=argparse.ArgumentParser();p.add_argument('--evidence',required=True);args=p.parse_args()
 root=Path(args.evidence).resolve(); reports=[]
 repo=Path(__file__).resolve().parents[1]
-if root==repo or repo in root.parents:raise SystemExit('Evidence must be external')
+validate_evidence_path(root)
 for directory in sorted(root.iterdir()):
     if not (directory/'summary.json').exists():continue
     metrics=json.loads((directory/'summary.json').read_text())

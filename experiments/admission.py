@@ -6,11 +6,12 @@ import sys
 import time
 import urllib.error
 from pathlib import Path
+from evidence_paths import validate_evidence_path
 from run import REPO,COMPOSE,command,sql,http,wait_for,java,launch,stop,new_root,metadata,save,snapshot,report,now,PROCESSES,HANDLES
 from checker import check
 from end_to_end import reset_source
 p=argparse.ArgumentParser();p.add_argument('--evidence',required=True);a=p.parse_args();base=Path(a.evidence).resolve()
-if base==REPO or REPO in base.parents:raise SystemExit('Evidence must be external')
+validate_evidence_path(base)
 reset_source();root=new_root(base,'e2e-inbox-admission');metadata(root,dict(mode='inbox',scenario='global-admission'))
 processes=[];collector=None;controller=[]
 def record(action,**detail):
