@@ -62,6 +62,9 @@ def run(base, mode, boundary='none', concurrent_duplicate=False, poll_ms=100, se
                 record('fault_removed')
             recovery=threading.Thread(target=clear);recovery.start()
         save(root/'before-load-observe.json',http('http://localhost:8090/observe'))
+        statement_query="SELECT SCHEMA_NAME,SUM(COUNT_STAR) AS COUNT_STATEMENTS FROM performance_schema.events_statements_summary_by_digest WHERE SCHEMA_NAME IN ('order_db','inventory_db') GROUP BY SCHEMA_NAME"
+        io_begin=now()
+        save(root/'source-statements-before.json',sql(statement_query))
         save(root/'source-db-io-before.json',sql("SELECT OBJECT_SCHEMA,OBJECT_NAME,COUNT_READ,COUNT_WRITE,COUNT_INSERT,COUNT_UPDATE FROM performance_schema.table_io_waits_summary_by_table WHERE OBJECT_SCHEMA IN ('order_db','inventory_db')"))
         record('workload_started')
         orders=[];input_times={}
@@ -116,6 +119,8 @@ def run(base, mode, boundary='none', concurrent_duplicate=False, poll_ms=100, se
         if seller_fault:recovery.join()
         remote,effects,states=snapshot(root)
         save(root/'source-db-io-after.json',sql("SELECT OBJECT_SCHEMA,OBJECT_NAME,COUNT_READ,COUNT_WRITE,COUNT_INSERT,COUNT_UPDATE FROM performance_schema.table_io_waits_summary_by_table WHERE OBJECT_SCHEMA IN ('order_db','inventory_db')"))
+        save(root/'source-statements-after.json',sql(statement_query))
+        save(root/'source-io-window.json',dict(startedAt=io_begin,finishedAt=now()))
         checked=check(expected,remote,effects,states)
         stock=sql("SELECT stock_quantity FROM inventories WHERE product_cd='SKU-1'",'inventory_db')[0]['stock_quantity']
         history=sql('SELECT event_id,order_id,delta FROM stock_history','inventory_db')
@@ -126,6 +131,11 @@ def run(base, mode, boundary='none', concurrent_duplicate=False, poll_ms=100, se
         checked['passed']=not checked['errors']
         save(root/'source-final.json',dict(orders=final_orders,history=history,stock=stock))
         save(root/'checker.json',checked)
+        idle_start=now()
+        idle_before=sql(statement_query)
+        time.sleep(2)
+        idle_after=sql(statement_query)
+        save(root/'idle-poll-statements.json',dict(startedAt=idle_start,finishedAt=now(),before=idle_before,after=idle_after))
         # Check in exact schema creation separately from evidence; validate on later starts.
         migration=REPO/'experiments/migrations/001-source-schema.sql'
         if not migration.exists():

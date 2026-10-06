@@ -109,6 +109,7 @@ def metadata(root, settings):
         jvm='-Xms64m -Xmx192m -XX:ActiveProcessorCount=4',jvmProcessorHint=4,workers=4,sellerConcurrency=2,dbPool=4,
         normalSellerSloMs=1500,backlogLimit=200,retainedRowsLimit=2000,rawObservationLimitBytes=8388608,
         jarSha256=hashlib.sha256((REPO/'partner-integration-service/build/libs/app.jar').read_bytes()).hexdigest(),
+        jarSha256ByModule={module:hashlib.sha256((REPO/module/'build/libs/app.jar').read_bytes()).hexdigest() for module in ['order-service','inventory-service','partner-integration-service']},
         scriptsSha256={str(x.relative_to(REPO)):hashlib.sha256(x.read_bytes()).hexdigest() for x in (REPO/'experiments').glob('*.py')},
         seed=1250,python=sys.version,javaRuntime=JAVA_RUNTIME,startedAt=now()))
     (root/'code.diff').write_text(command(['git','diff']))
@@ -367,9 +368,10 @@ if __name__ == '__main__':
             for mode in ['sequential','async']:
                 for scenario in ['ack-release','ack-kill','external-kill','business-before-kill','rebalance']:run_case(evidence,mode,scenario,1)
             for scenario in ['inbox-kill','worker-kill','external-kill','business-before-kill','inbox-before-kill','backlog']:run_case(evidence,'inbox',scenario,1)
-            for mode in ['sequential','async','inbox']:
-                run_case(evidence,mode,'clean',1)
-                run_case(evidence,mode,'clean',2,False)
+            for repeat in range(1,4):
+                for mode in ['sequential','async','inbox']:
+                    run_case(evidence,mode,'clean',repeat)
+                    run_case(evidence,mode,'clean',repeat,False)
         else:run_case(evidence,args.mode or 'sequential',args.scenario,args.repeat,not args.no_observe)
     finally:
         for process in PROCESSES:stop(process)
