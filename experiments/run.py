@@ -118,7 +118,10 @@ def remote_java(root, module, extra, jvm):
                 SPRING_DATASOURCE_USERNAME='root',SPRING_DATASOURCE_PASSWORD='labpassword',CODE_VERSION=command(['git','rev-parse','HEAD']).strip(),
                 APP_REPLICATION_FACTOR=topology.REPLICATION_FACTOR,**{k:str(v) for k,v in (extra or {}).items()})
     assignments=' '.join(f"{k}='{v}'" for k,v in remote.items())
-    script=f"pkill -KILL -f '{module[:-1]}[{module[-1]}]/build/libs/app.jar'; cd repo && exec env {assignments} {' '.join(jvm)} {module}/build/libs/app.jar"
+    # Separate call: a pkill inside the launch command would match that command line and kill itself.
+    try:topology.ssh(topology.PARTNER_HOST,f"pkill -KILL -f '{module[:-1]}[{module[-1]}]/build/libs/app.jar' || true")
+    except Exception:pass
+    script=f"cd repo && exec env {assignments} {' '.join(jvm)} {module}/build/libs/app.jar"
     handle=(root/(module+'.log')).open('a');HANDLES.append(handle)
     process=subprocess.Popen(topology.ssh_args(topology.PARTNER_HOST,tty=True)+[script],stdin=subprocess.DEVNULL,stdout=handle,stderr=subprocess.STDOUT)
     process.remote_host=topology.PARTNER_HOST
