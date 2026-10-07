@@ -144,7 +144,9 @@ def remote_java(root, module, extra, jvm):
     try:topology.ssh(topology.PARTNER_HOST,f"pkill -KILL -f '{module[:-1]}[{module[-1]}]/build/libs/app.jar' || true")
     except Exception:pass
     remote_log=f'/home/ec2-user/logs/{root.name}.log'
-    pid=topology.ssh(topology.PARTNER_HOST,f"mkdir -p logs; cd repo && nohup env {assignments} {' '.join(jvm)} {module}/build/libs/app.jar >> {remote_log} 2>&1 < /dev/null & echo $!").strip()
+    # Only the nohup command goes to the background: "cd && nohup ... &" would background a subshell
+    # that keeps the ssh channel open.
+    pid=topology.ssh(topology.PARTNER_HOST,f"mkdir -p logs; cd repo; nohup env {assignments} {' '.join(jvm)} {module}/build/libs/app.jar >> {remote_log} 2>&1 < /dev/null & echo $!").strip()
     process=RemoteJvm(topology.PARTNER_HOST,int(pid),remote_log,root/(module+'.log'))
     PROCESSES.append(process)
     return process
