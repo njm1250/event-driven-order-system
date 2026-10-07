@@ -24,6 +24,9 @@ COMPOSE = ['docker','compose','-p','partner-isolation','-f',str(REPO/'docker-com
 PROCESSES = []
 HANDLES = []
 JAVA_RUNTIME = None
+# A partner API on another host (the AWS run) stays up and starts a fresh ledger per run.
+PARTNER_API = os.environ.get('PARTNER_API_URL', 'http://localhost:8099')
+REMOTE_PARTNER = 'localhost' not in PARTNER_API
 MODES = ['sequential','async','inbox','circuit-breaker','retry-topic','parallel-consumer']
 
 def now():
@@ -173,7 +176,7 @@ def dataset(run_id, orders=24, operations=3, workload='pair'):
     return values
 
 def snapshot(root):
-    remote=http('http://localhost:8099/snapshot')
+    remote=http(PARTNER_API+'/snapshot')
     effects=sql('SELECT * FROM partner_effect ORDER BY completed_at,event_id')
     orders=sql('SELECT * FROM partner_order ORDER BY seller_id,order_id')
     save(root/'remote.json',remote);save(root/'db-effects.json',effects);save(root/'db-orders.json',orders)
@@ -236,7 +239,7 @@ def report(root, expected, result):
             memory_samples.append(item['processRssKiB']*1024+item.get('collectorPeakRssBytes',0)+sum(x['memoryWithoutInactiveFileBytes'] for x in containers.values()))
     metrics['peakMeasuredStackMemoryBytes']=max(memory_samples) if memory_samples else None
     metrics['infraMemorySamples']=len(memory_samples)
-    metrics['externalSqliteBytes']=(root/'external.sqlite').stat().st_size + sum(x.stat().st_size for x in root.glob('external.sqlite-*'))
+    metrics['externalSqliteBytes']=None if REMOTE_PARTNER else (root/'external.sqlite').stat().st_size + sum(x.stat().st_size for x in root.glob('external.sqlite-*'))
     metrics['rawEvidenceBytes']=sum(x.stat().st_size for x in root.rglob('*') if x.is_file())
     final=json.loads((root/'final-observe.json').read_text())
     metrics['retryTopicRecords']=final.get('retryLogEnd')
@@ -264,8 +267,10 @@ def run_case(base, mode, scenario, repeat, observe=True, workload='pair', partit
                   workload=workload,partitions=partitions,orders=orders,sellers=2 if workload=='pair' else MARKET_SELLERS)
     metadata(root,settings)
     sql('DELETE FROM inbox; DELETE FROM partner_effect; DELETE FROM partner_order') if sql('SHOW TABLES') else None
-    mock=launch([sys.executable,str(REPO/'experiments/mock-partner-api/server.py'),'--database',str(root/'external.sqlite')],root/'mock.log')
-    extra=dict(PARTNER_MODE=mode,PARTNER_TOPIC=topic,PARTNER_GROUP=group,APP_PARTITIONS=partitions)
+    if REMOTE_PARTNER:
+        http(PARTNER_API+'/reset',dict(name=root.name));mock=None
+    else:mock=launch([sys.executable,str(REPO/'experiments/mock-partner-api/server.py'),'--database',str(root/'external.sqlite')],root/'mock.log')
+    extra=dict(PARTNER_MODE=mode,PARTNER_TOPIC=topic,PARTNER_GROUP=group,APP_PARTITIONS=partitions,APP_PARTNER_URL=PARTNER_API)
     if workload!='pair':extra['APP_INPUT_BUDGET']=5000
     if scenario=='rebalance':extra['SPRING_KAFKA_CONSUMER_PROPERTIES_MAX_POLL_INTERVAL_MS']=2000
     if scenario=='backlog':extra['APP_BACKLOG_LIMIT']=8
@@ -276,16 +281,16 @@ def run_case(base, mode, scenario, repeat, observe=True, workload='pair', partit
     fault_seconds=12 if scenario=='hang' else 6
     def clear_fault():
         time.sleep(fault_seconds)
-        http('http://localhost:8099/control',dict(sellerId='slow',delayMs=0,failureCount=0))
+        http(PARTNER_API+'/control',dict(sellerId='slow',delayMs=0,failureCount=0))
         record('fault_removed')
     try:
-        wait_for(lambda:http('http://localhost:8099/health'),label='mock ready')
+        wait_for(lambda:http(PARTNER_API+'/health'),label='mock ready')
         service=java('partner-integration-service',root,extra)
         wait_for(lambda:http('http://localhost:8090/observe').get('assigned',0)>=(1 if mode=='inbox' else partitions),label='partner assignment ready')
         http('http://localhost:8090/load',[])
         # Allow assignment and capture 1s of fault-free data before injection.
         if observe:
-            collector=launch([sys.executable,str(REPO/'experiments/collector.py'),'--directory',str(root),'--pids',f'{service.pid},{mock.pid}'],root/'collector.log')
+            collector=launch([sys.executable,str(REPO/'experiments/collector.py'),'--directory',str(root),'--pids',f'{service.pid},{mock.pid}' if mock else str(service.pid)],root/'collector.log')
         time.sleep(1)
         save(root/'before-load-observe.json',http('http://localhost:8090/observe'))
         save(root/'db-io-before.json',sql("SELECT OBJECT_NAME,COUNT_READ,COUNT_WRITE,COUNT_FETCH,COUNT_INSERT,COUNT_UPDATE,COUNT_DELETE FROM performance_schema.table_io_waits_summary_by_table WHERE OBJECT_SCHEMA='partner_db'"))
@@ -297,15 +302,15 @@ def run_case(base, mode, scenario, repeat, observe=True, workload='pair', partit
         if scenario in {'api','backlog','broker-kill','hotkey','park-kill','hang'}:
             # hang: the API answers just inside the 5s client timeout, as a stuck dependency does.
             delay=3000 if scenario=='hang' else 600
-            http('http://localhost:8099/control',dict(sellerId='slow',delayMs=delay,failureCount=1000 if scenario=='hotkey' else 0))
+            http(PARTNER_API+'/control',dict(sellerId='slow',delayMs=delay,failureCount=1000 if scenario=='hotkey' else 0))
             record('fault_injected',kind='seller_api_delay',delayMs=delay,durationMs=fault_seconds*1000)
             thread=threading.Thread(target=clear_fault);thread.start();threads.append(thread)
         elif scenario=='retry':
-            http('http://localhost:8099/control',dict(sellerId='slow',failureCount=3))
+            http(PARTNER_API+'/control',dict(sellerId='slow',failureCount=3))
             record('fault_injected',kind='seller_error',failureCount=3)
             thread=threading.Thread(target=clear_fault);thread.start();threads.append(thread)
         elif scenario=='response-loss':
-            http('http://localhost:8099/control',dict(sellerId='slow',dropResponse=True))
+            http(PARTNER_API+'/control',dict(sellerId='slow',dropResponse=True))
             record('fault_injected',kind='response_loss')
         elif scenario=='db':
             http('http://localhost:8090/fault/db',dict(durationMs=3000))

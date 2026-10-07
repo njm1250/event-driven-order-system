@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Separate external system: durable SQLite effects, deterministic faults and idempotency contract."""
 import argparse
+import os
 import json
 import sqlite3
 import threading
@@ -44,6 +45,15 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         data = self.body()
+        if self.path == '/reset':
+            # A long-lived server on another host keeps one ledger per experiment run.
+            global db
+            with lock:
+                controls.clear()
+                active.clear()
+                db = open_ledger(os.path.join(ledger_dir, data['name'] + '.sqlite'))
+            self.reply(200, dict(reset=True, time=now()))
+            return
         if self.path == '/control':
             with lock:
                 controls[data['sellerId']] = data
@@ -94,16 +104,25 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self.reply(status, dict(eventId=key, accepted=status == 200, duplicate=bool(prior)))
 
+LEDGER_SCHEMA = '''PRAGMA journal_mode=WAL;
+    CREATE TABLE IF NOT EXISTS effects(effect_index INTEGER PRIMARY KEY AUTOINCREMENT,event_id TEXT,seller_id TEXT,order_id INTEGER,seq INTEGER,operation TEXT,quantity INTEGER,price REAL,occurred_at INTEGER,effect_at INTEGER,payload TEXT);
+    CREATE TABLE IF NOT EXISTS attempts(id INTEGER PRIMARY KEY AUTOINCREMENT,event_id TEXT,seller_id TEXT,order_id INTEGER,seq INTEGER,start_at INTEGER,end_at INTEGER,status INTEGER,response_lost INTEGER);
+    CREATE TABLE IF NOT EXISTS orders(seller_id TEXT,order_id INTEGER,seq INTEGER,operation TEXT,quantity INTEGER,price REAL,PRIMARY KEY(seller_id,order_id));'''
+
+
+def open_ledger(path):
+    ledger = sqlite3.connect(path, check_same_thread=False)
+    ledger.row_factory = sqlite3.Row
+    ledger.executescript(LEDGER_SCHEMA)
+    return ledger
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--database', required=True)
     parser.add_argument('--host',default='127.0.0.1')
     parser.add_argument('--port', type=int, default=8099)
     args = parser.parse_args()
-    db = sqlite3.connect(args.database, check_same_thread=False)
-    db.row_factory = sqlite3.Row
-    db.executescript('''PRAGMA journal_mode=WAL;
-    CREATE TABLE IF NOT EXISTS effects(effect_index INTEGER PRIMARY KEY AUTOINCREMENT,event_id TEXT,seller_id TEXT,order_id INTEGER,seq INTEGER,operation TEXT,quantity INTEGER,price REAL,occurred_at INTEGER,effect_at INTEGER,payload TEXT);
-    CREATE TABLE IF NOT EXISTS attempts(id INTEGER PRIMARY KEY AUTOINCREMENT,event_id TEXT,seller_id TEXT,order_id INTEGER,seq INTEGER,start_at INTEGER,end_at INTEGER,status INTEGER,response_lost INTEGER);
-    CREATE TABLE IF NOT EXISTS orders(seller_id TEXT,order_id INTEGER,seq INTEGER,operation TEXT,quantity INTEGER,price REAL,PRIMARY KEY(seller_id,order_id));''')
+    ledger_dir = os.path.dirname(os.path.abspath(args.database))
+    db = open_ledger(args.database)
     ThreadingHTTPServer((args.host, args.port), Handler).serve_forever()

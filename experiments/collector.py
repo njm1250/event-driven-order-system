@@ -50,7 +50,7 @@ if __name__ == '__main__':
                 item['service'] = None
                 item['serviceError'] = str(e)
             try:
-                snapshot = get('http://localhost:8099/snapshot')
+                snapshot = get(os.environ.get('PARTNER_API_URL', 'http://localhost:8099') + '/snapshot')
                 item['externalEffects'] = len(snapshot['effects'])
                 item['externalActive'] = snapshot['active']
                 expected = json.loads((root/'expected.json').read_text()) if (root/'expected.json').exists() else []
