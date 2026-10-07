@@ -7,7 +7,7 @@ field() { python3 -c "import json,sys;print(json.load(open(sys.argv[1])).get(sys
 region=$(field region); session=$(field session)
 aws_() { aws --region "$region" "$@"; }
 note() { echo "[$(date -u +%H:%M:%S)] $*" | tee -a "$out_dir/session.log"; }
-instances=$(echo "$(field systemInstance) $(field partnerInstance)" | xargs)
+instances=$(python3 -c "import json,sys;d=json.load(open(sys.argv[1]));print(' '.join(d.get('instances') or [d.get(k) for k in ('systemInstance','partnerInstance') if d.get(k)]))" "$ledger")
 note "teardown start: $session"
 if [[ -n "$instances" ]]; then
   aws_ ec2 terminate-instances --instance-ids $instances >/dev/null

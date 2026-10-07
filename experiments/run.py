@@ -91,7 +91,7 @@ def stop(process, kill=False):
     host=getattr(process,'remote_host',None)
     if host:
         # Closing ssh -tt hangs up the remote JVM; pkill makes sure no instance outlives the run.
-        try:topology.ssh(host,'pkill -KILL -f partner-integration-service/build/libs/app.jar || true')
+        try:topology.ssh(host,"pkill -KILL -f 'partner-integration-servic[e]/build/libs/app.jar' || true")
         except Exception:pass
     if process and process.poll() is None:
         process.kill() if kill else process.terminate()
@@ -118,7 +118,7 @@ def remote_java(root, module, extra, jvm):
                 SPRING_DATASOURCE_USERNAME='root',SPRING_DATASOURCE_PASSWORD='labpassword',CODE_VERSION=command(['git','rev-parse','HEAD']).strip(),
                 APP_REPLICATION_FACTOR=topology.REPLICATION_FACTOR,**{k:str(v) for k,v in (extra or {}).items()})
     assignments=' '.join(f"{k}='{v}'" for k,v in remote.items())
-    script=f"pkill -KILL -f {module}/build/libs/app.jar; cd repo && exec env {assignments} {' '.join(jvm)} {module}/build/libs/app.jar"
+    script=f"pkill -KILL -f '{module[:-1]}[{module[-1]}]/build/libs/app.jar'; cd repo && exec env {assignments} {' '.join(jvm)} {module}/build/libs/app.jar"
     handle=(root/(module+'.log')).open('a');HANDLES.append(handle)
     process=subprocess.Popen(topology.ssh_args(topology.PARTNER_HOST,tty=True)+[script],stdin=subprocess.DEVNULL,stdout=handle,stderr=subprocess.STDOUT)
     process.remote_host=topology.PARTNER_HOST
