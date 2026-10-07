@@ -69,7 +69,9 @@ public class WorkerDispatcher {
             int attempt = task.nextAttempt();
             if (inboxMode) inbox.saveAttempts(task.eventId(), attempt);
             processor.process(task);
-            admission.markFinished(task.eventId());
+            // Inbox only: a Kafka redelivery of the same event is absorbed by the inbox key, but in the
+            // async mode it is a new record that still has to run once to be acknowledged.
+            if (inboxMode) admission.markFinished(task.eventId());
             BoundaryGate.hit(inboxMode ? "worker_commit" : "business_commit", task.eventId());
             if (task.ack() != null && pending.isCurrent(task)) {
                 task.ack().acknowledge();
