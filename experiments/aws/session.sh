@@ -1,13 +1,16 @@
 #!/usr/bin/env bash
 # One bounded AWS session for the representative comparison.
-#   system host (m6i.xlarge): Kafka, MySQL, partner service, controller, collector
-#   partner host (m6i.large): mock seller API, reached over the VPC
+#   system host (SYSTEM_TYPE, default m7i-flex.large): Kafka, MySQL, partner service, controller, collector
+#   partner host (PARTNER_TYPE, default c7i-flex.large): mock seller API, reached over the VPC
+# The defaults are AWS Free plan eligible; a paid account can pass m6i.xlarge / m6i.large instead.
 # Three independent stops: OS shutdown timer (terminate on shutdown), an EventBridge Scheduler
 # terminate at the deadline, and the cleanup trap below. Only resources created here are removed.
 set -euo pipefail
 
 region=ap-northeast-2
 max_hours=${MAX_HOURS:-5}
+system_type=${SYSTEM_TYPE:-m7i-flex.large}
+partner_type=${PARTNER_TYPE:-c7i-flex.large}
 repo_dir="$(cd "$(dirname "$0")/../.." && pwd)"
 out_dir="${1:?usage: session.sh <evidence dir>}"
 mkdir -p "$out_dir"
@@ -49,7 +52,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-record session "$session"; record region "$region"; record startedAt "$(date -u +%FT%TZ)"
+record session "$session"; record region "$region"; record systemType "$system_type"; record partnerType "$partner_type"; record startedAt "$(date -u +%FT%TZ)"
 account=$(aws sts get-caller-identity --query Account --output text)
 my_ip=$(curl -fsS https://checkip.amazonaws.com)/32
 vpc=$(aws_ ec2 describe-vpcs --filters Name=is-default,Values=true --query 'Vpcs[0].VpcId' --output text)
@@ -86,8 +89,8 @@ launch() {
       "ResourceType=volume,Tags=[{Key=session,Value=$session}]" \
     --query 'Instances[0].InstanceId' --output text
 }
-system=$(launch m6i.xlarge system); instances+=("$system"); record systemInstance "$system"
-partner=$(launch m6i.large partner-api); instances+=("$partner"); record partnerInstance "$partner"
+system=$(launch "$system_type" system); instances+=("$system"); record systemInstance "$system"
+partner=$(launch "$partner_type" partner-api); instances+=("$partner"); record partnerInstance "$partner"
 note "launched $system $partner"
 
 # AWS-side deadline that works even if neither OS nor this laptop is alive.
