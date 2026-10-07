@@ -182,7 +182,8 @@ public class ExperimentController {
                     : producer.send(settings.topic(), e.key(), value));
         }
         for (int i = 0; i < events.size(); i++) {
-            var sent = pending.get(i).get(5, TimeUnit.SECONDS).getRecordMetadata();
+            // Long enough to ride out a leader election after a broker is killed (session timeout 9s).
+            var sent = pending.get(i).get(60, TimeUnit.SECONDS).getRecordMetadata();
             var e = events.get(i);
             result.add(Map.of("eventId", e.eventId(), "sellerId", e.sellerId(), "partition", sent.partition(), "offset", sent.offset()));
         }

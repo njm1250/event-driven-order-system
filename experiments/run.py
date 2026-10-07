@@ -439,7 +439,7 @@ def run_case(base, mode, scenario, repeat, observe=True, workload='pair', partit
             for event in expected[i:i+per_tick]:event['occurredAt']=now()
             if workload!='sweep' or time.monotonic()-last_saved>=1:
                 save(root/'expected.json',expected[:i+per_tick]);last_saved=time.monotonic()
-            placements.extend(http(SERVICE_URL+'/load',expected[i:i+per_tick],timeout=30))
+            placements.extend(http(SERVICE_URL+'/load',expected[i:i+per_tick],timeout=90))
             tick+=0.1
             time.sleep(max(0,tick-time.monotonic()))
         save(root/'expected.json',expected)
