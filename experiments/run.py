@@ -219,7 +219,8 @@ def dataset(run_id, orders=24, operations=3, workload='pair'):
     # Each phase is interleaved between sellers.
     for seq in range(1,operations+1):
         for i in range(orders):
-            values.append(dict(eventId=str(uuid.uuid5(uuid.NAMESPACE_URL,f'{run_id}/{i}/{seq}')),runId=run_id,
+            # runId is limited to 64 characters by the event contract; the tail keeps the unique suffix.
+            values.append(dict(eventId=str(uuid.uuid5(uuid.NAMESPACE_URL,f'{run_id}/{i}/{seq}')),runId=run_id[-64:],
                 sellerId=seller_for(i,workload),orderId=i+1,sequence=seq,
                 operation=['CREATE','CHANGE','CANCEL'][seq-1],occurredAt=now(),schemaVersion=1,
                 quantity=seq+1,price=float(100+seq)))

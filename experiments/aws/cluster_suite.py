@@ -68,12 +68,13 @@ if __name__ == '__main__':
     p = argparse.ArgumentParser()
     p.add_argument('--stage', type=int, choices=[1, 2, 3], required=True)
     p.add_argument('--evidence', required=True)
+    p.add_argument('--only-scenario', help='rerun one scenario of the stage plan, e.g. after a harness fix')
     a = p.parse_args()
     root = Path(a.evidence).resolve()
     validate_evidence_path(root)
     root.mkdir(parents=True, exist_ok=True)
-    plan = stage_plan(a.stage)
-    (root/'plan.json').write_text(json.dumps(plan, indent=2))
+    plan = [x for x in stage_plan(a.stage) if not a.only_scenario or x['scenario'] == a.only_scenario]
+    (root/('plan.json' if not a.only_scenario else f'plan-{a.only_scenario}.json')).write_text(json.dumps(plan, indent=2))
     failures = []
     try:
         for index, case in enumerate(plan, 1):
@@ -92,4 +93,4 @@ if __name__ == '__main__':
     for script in ['analyze.py', 'comparison_report.py', 'sweep_report.py']:
         subprocess.run([sys.executable, str(REPO/'experiments'/script), '--evidence', str(root)])
     print(json.dumps(dict(stage=a.stage, planned=len(plan), failed=len(failures))), flush=True)
-    (root/'DONE').write_text('done\n')
+    (root/('DONE' if not a.only_scenario else f'DONE-{a.only_scenario}')).write_text('done\n')
