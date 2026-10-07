@@ -164,6 +164,7 @@ if __name__=='__main__':
     p=argparse.ArgumentParser();p.add_argument('--evidence',default=str(DEFAULT_EVIDENCE));p.add_argument('--mode',default='inbox',choices=['sequential','async','inbox','inbox-batch','circuit-breaker','retry-topic','parallel-consumer']);p.add_argument('--boundary',default='none',choices=['none','broker_ack','inventory_broker_ack']);p.add_argument('--poll-ms',type=int,default=100);p.add_argument('--seller-fault',action='store_true');p.add_argument('--concurrent-duplicate',action='store_true');args=p.parse_args()
     path=Path(args.evidence).resolve()
     validate_evidence_path(path)
+    path.mkdir(parents=True,exist_ok=True)
     try:run(path,args.mode,args.boundary,args.concurrent_duplicate,args.poll_ms,args.seller_fault)
     finally:
         for p in PROCESSES:stop(p)
