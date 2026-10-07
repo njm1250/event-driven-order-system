@@ -28,27 +28,16 @@ json.dump(data,open(path,'w'),indent=2)
 PY
 }
 
-instances=(); sg=""; role=""; schedule=""
+instances=(); keep_hosts=0
 cleanup() {
   set +e
-  note "cleanup start"
-  if ((${#instances[@]})); then
-    aws_ ec2 terminate-instances --instance-ids "${instances[@]}" >/dev/null
-    aws_ ec2 wait instance-terminated --instance-ids "${instances[@]}"
-    note "terminated ${instances[*]}"
+  # KEEP_HOSTS=1: a finished run leaves the hosts for manual result retrieval; the OS timer and
+  # the EventBridge deadline still apply. A failed run is always torn down.
+  if ((keep_hosts)); then
+    note "hosts kept for manual retrieval; run experiments/aws/teardown.sh $out_dir when done"
+    return
   fi
-  [[ -n "$schedule" ]] && aws_ scheduler delete-schedule --name "$schedule" >/dev/null 2>&1
-  if [[ -n "$role" ]]; then
-    aws iam delete-role-policy --role-name "$role" --policy-name terminate >/dev/null 2>&1
-    aws iam delete-role --role-name "$role" >/dev/null 2>&1
-  fi
-  [[ -n "$sg" ]] && aws_ ec2 delete-security-group --group-id "$sg" >/dev/null
-  aws_ ec2 delete-key-pair --key-name "$session" >/dev/null 2>&1
-  rm -f "$key_file"
-  # Root volumes use DeleteOnTermination; confirm nothing tagged with this session is left.
-  left=$(aws_ ec2 describe-volumes --filters "Name=tag:session,Values=$session" --query 'length(Volumes)' --output text)
-  note "cleanup done, remaining tagged volumes: $left"
-  record cleanupFinishedAt "$(date -u +%FT%TZ)"
+  ((${#instances[@]})) || [[ -f "$ledger" ]] && bash "$repo_dir/experiments/aws/teardown.sh" "$out_dir"
 }
 trap cleanup EXIT
 
@@ -101,24 +90,28 @@ note "launched $system $partner"
 
 # AWS-side deadline that works even if neither OS nor this laptop is alive.
 role="$session-terminate"
+record terminateRole "$role"
 aws iam create-role --role-name "$role" --assume-role-policy-document \
   '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"scheduler.amazonaws.com"},"Action":"sts:AssumeRole"}]}' >/dev/null
-record terminateRole "$role"
 aws iam put-role-policy --role-name "$role" --policy-name terminate --policy-document \
   "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Effect\":\"Allow\",\"Action\":\"ec2:TerminateInstances\",\"Resource\":[\"arn:aws:ec2:$region:$account:instance/$system\",\"arn:aws:ec2:$region:$account:instance/$partner\"]}]}"
 sleep 10  # IAM propagation before the scheduler validates the role
 deadline=$(date -u -v+${max_hours}H +%Y-%m-%dT%H:%M:%S 2>/dev/null || date -u -d "+$max_hours hours" +%Y-%m-%dT%H:%M:%S)
-schedule="$session"
-aws_ scheduler create-schedule --name "$schedule" --schedule-expression "at($deadline)" --schedule-expression-timezone UTC \
+aws_ scheduler create-schedule --name "$session" --schedule-expression "at($deadline)" --schedule-expression-timezone UTC \
   --flexible-time-window Mode=OFF --action-after-completion DELETE \
   --target "{\"Arn\":\"arn:aws:scheduler:::aws-sdk:ec2:terminateInstances\",\"RoleArn\":\"arn:aws:iam::$account:role/$role\",\"Input\":\"{\\\"InstanceIds\\\":[\\\"$system\\\",\\\"$partner\\\"]}\"}" >/dev/null
-aws_ scheduler get-schedule --name "$schedule" --query ScheduleExpression --output text | tee -a "$out_dir/session.log"
+record terminateSchedule "$session"
+aws_ scheduler get-schedule --name "$session" --query ScheduleExpression --output text | tee -a "$out_dir/session.log"
 record terminateDeadlineUtc "$deadline"
 
 aws_ ec2 wait instance-running --instance-ids "$system" "$partner"
 read -r system_ip system_private <<<"$(aws_ ec2 describe-instances --instance-ids "$system" --query 'Reservations[0].Instances[0].[PublicIpAddress,PrivateIpAddress]' --output text)"
 read -r partner_ip partner_private <<<"$(aws_ ec2 describe-instances --instance-ids "$partner" --query 'Reservations[0].Instances[0].[PublicIpAddress,PrivateIpAddress]' --output text)"
-ssh_() { local host=$1; shift; ssh -i "$key_file" -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="$out_dir/known_hosts" -o ConnectTimeout=10 "ec2-user@$host" "$@"; }
+ssh_() {
+  local options=()
+  [[ "$1" == -f ]] && { options+=(-f); shift; }
+  local host=$1; shift
+  ssh "${options[@]}" -i "$key_file" -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="$out_dir/known_hosts" -o ConnectTimeout=10 "ec2-user@$host" "$@"; }
 scp_() { scp -i "$key_file" -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="$out_dir/known_hosts" "$@"; }
 for host in "$system_ip" "$partner_ip"; do
   for _ in $(seq 60); do ssh_ "$host" test -f /var/tmp/ready 2>/dev/null && break; sleep 10; done
@@ -131,7 +124,10 @@ done
 
 # Partner API host: one long-lived mock, a fresh ledger per run through /reset.
 scp_ "$repo_dir/experiments/mock-partner-api/server.py" "ec2-user@$partner_ip:server.py"
-ssh_ "$partner_ip" 'mkdir -p ledgers && nohup python3 server.py --host 0.0.0.0 --database ledgers/initial.sqlite > mock.log 2>&1 < /dev/null &'
+ssh_ "$partner_ip" 'mkdir -p ledgers'
+# -f returns once the command starts; a backgrounded remote subshell would otherwise hold the channel.
+ssh_ -f "$partner_ip" 'nohup python3 server.py --host 0.0.0.0 --database ledgers/initial.sqlite > mock.log 2>&1 < /dev/null'
+for _ in $(seq 30); do ssh_ "$partner_ip" 'curl -fs localhost:8099/health' >/dev/null && break; sleep 1; done
 
 # System host: the exact commit and the locally built jars.
 git -C "$repo_dir" bundle create "$out_dir/repo.bundle" HEAD >/dev/null 2>&1
@@ -145,8 +141,15 @@ note "stack up, partner API at $partner_private"
 
 ssh_ "$system_ip" "cd repo && PARTNER_API_URL=http://$partner_private:8099 python3 experiments/aws_comparison.py --evidence experiment-evidence/aws" \
   2>&1 | tee -a "$out_dir/remote-run.log" || note "remote run failed; collecting what exists"
-ssh_ "$system_ip" "cd repo/experiment-evidence && tar czf ../../aws-evidence.tgz aws" || true
-scp_ "ec2-user@$system_ip:aws-evidence.tgz" "$out_dir/" && tar xzf "$out_dir/aws-evidence.tgz" -C "$out_dir"
+record systemPublicIp "$system_ip"; record partnerPublicIp "$partner_ip"
+if [[ "${KEEP_HOSTS:-0}" == 1 ]]; then
+  keep_hosts=1
+  note "remote run finished; hosts kept for retrieval"
+  exit 0
+fi
+ssh_ "$system_ip" "cd repo/experiment-evidence && tar czf ../../aws-evidence.tgz aws"
+scp_ "ec2-user@$system_ip:aws-evidence.tgz" "$out_dir/"
+tar xzf "$out_dir/aws-evidence.tgz" -C "$out_dir"
 scp_ "ec2-user@$partner_ip:mock.log" "$out_dir/partner-mock.log" || true
-shasum -a 256 "$out_dir/aws-evidence.tgz" > "$out_dir/aws-evidence.sha256" || true
+shasum -a 256 "$out_dir/aws-evidence.tgz" > "$out_dir/aws-evidence.sha256"
 note "results copied"
