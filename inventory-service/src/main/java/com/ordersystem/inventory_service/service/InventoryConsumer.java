@@ -33,7 +33,7 @@ public class InventoryConsumer {
         this.idempotencyEnabled = idempotencyEnabled;
     }
 
-    @KafkaListener(topics = Topics.ORDER_CREATED, groupId = "inventory-group")
+    @KafkaListener(topics = Topics.ORDER_CREATED, groupId = "${spring.kafka.consumer.group-id}")
     @Transactional
     public void handleOrderCreatedEvent(OrderCreatedEvent event) {
         String key = String.valueOf(event.getOrderId());
@@ -45,6 +45,8 @@ public class InventoryConsumer {
             return;
         }
 
+        stockHistoryRepository.saveAndFlush(StockHistory.builder()
+                .eventId(event.getEventId()).orderId(event.getOrderId()).delta(0).build());
         Inventory inventory = inventoryRepository.findByProductCode(event.getProductCode()).orElse(null);
         if (inventory == null) {
             log.warn("Unknown product {} for order {}", event.getProductCode(), event.getOrderId());
@@ -57,12 +59,8 @@ public class InventoryConsumer {
             return;
         }
 
+        stockHistoryRepository.updateDelta(event.getEventId(), -event.getQuantity());
         inventory.setStockQuantity(inventory.getStockQuantity() - event.getQuantity());
-        stockHistoryRepository.save(StockHistory.builder()
-                .eventId(event.getEventId())
-                .orderId(event.getOrderId())
-                .delta(-event.getQuantity())
-                .build());
         // 낙관적 락 충돌은 여기서 flush로 드러나 리스너 예외로 전파된다.
         // 경합은 재고 부족이 아니므로 취소 이벤트가 아니라 컨테이너 재시도로 해소한다.
         inventoryRepository.saveAndFlush(inventory);

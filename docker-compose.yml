@@ -29,6 +29,8 @@ services:
     volumes:
       - mysql-data:/var/lib/mysql
       - ./docker/mysql-init:/docker-entrypoint-initdb.d:ro
+      - ./experiments/migrations/001-source-schema.sql:/docker-entrypoint-initdb.d/z001-source-schema.sql:ro
+      - ./partner-integration-service/src/main/resources/schema.sql:/docker-entrypoint-initdb.d/z002-partner-schema.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "mysqladmin ping -h localhost -uroot -p${MYSQL_ROOT_PASSWORD:-labpassword} >/dev/null 2>&1"]
       interval: 10s
@@ -46,7 +48,7 @@ services:
       SPRING_DATASOURCE_USERNAME: root
       SPRING_DATASOURCE_PASSWORD: ${MYSQL_ROOT_PASSWORD:-labpassword}
       SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
-      APP_OUTBOX_ENABLED: ${APP_OUTBOX_ENABLED:-false}
+      APP_OUTBOX_ENABLED: ${APP_OUTBOX_ENABLED:-true}
       APP_KAFKA_PARTITIONS: ${APP_KAFKA_PARTITIONS:-3}
     depends_on:
       kafka:
@@ -91,6 +93,29 @@ services:
       mysql:
         condition: service_healthy
 
+  partner-integration-service:
+    profiles: [partner]
+    build:
+      context: .
+      dockerfile: partner-integration-service/Dockerfile
+    ports: ["127.0.0.1:8090:8090"]
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:mysql://mysql:3306/partner_db
+      SPRING_DATASOURCE_PASSWORD: ${MYSQL_ROOT_PASSWORD:-labpassword}
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      APP_PARTNER_URL: http://mock-partner-api:8099
+      PARTNER_MODE: ${PARTNER_MODE:-sequential}
+    depends_on:
+      kafka: {condition: service_healthy}
+      mysql: {condition: service_healthy}
+      mock-partner-api: {condition: service_started}
+  mock-partner-api:
+    profiles: [partner]
+    build:
+      context: .
+      dockerfile: experiments/mock-partner-api/Dockerfile
+    ports: ["127.0.0.1:8099:8099"]
+    volumes: ["${EVIDENCE_DIR:-../experiment-evidence/manual}:/evidence"]
 
 volumes:
   mysql-data:

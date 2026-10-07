@@ -23,6 +23,14 @@ public class Order {
     @Column(name = "product_cd")
     private String productCode;
 
+    @Column(nullable = false)
+    private String sellerId = "legacy";
+
+    private String runId = "api";
+    private int partnerSequence;
+    @Version
+    private Long version;
+
     private int quantity;
 
     private double price;
@@ -40,11 +48,26 @@ public class Order {
     private LocalDateTime updatedAt;
 
     @Builder
-    public Order(String productCode, int quantity, double price, OrderStatus orderStatus) {
+    public Order(String productCode, int quantity, double price, OrderStatus orderStatus, String sellerId, String runId) {
+        this.sellerId = sellerId == null ? "legacy" : sellerId;
+        this.runId = runId == null ? "api" : runId;
         this.productCode = productCode;
         this.quantity = quantity;
         this.price = price;
         this.orderStatus = orderStatus;
+    }
+
+    public int nextPartnerSequence() { return ++partnerSequence; }
+
+    public void changeForPartner(int quantity, double price) {
+        if (orderStatus != OrderStatus.CONFIRMED) throw new IllegalStateException("Only confirmed orders can change");
+        this.quantity = quantity;
+        this.price = price;
+    }
+
+    public void cancelForPartner() {
+        if (orderStatus != OrderStatus.CONFIRMED) throw new IllegalStateException("Only confirmed orders can cancel");
+        orderStatus = OrderStatus.CANCELLED;
     }
 
     public boolean confirm() {

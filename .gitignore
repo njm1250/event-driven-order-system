@@ -38,3 +38,14 @@ out/
 .vscode/
 
 .env
+
+# Experiment documents and evidence must remain untracked.
+results/
+evidence/
+__pycache__/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+
+# Raw experiment results stay out of the repository.
+/experiment-evidence/

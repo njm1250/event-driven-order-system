@@ -17,6 +17,11 @@ public class KafkaTopicConfig {
     }
 
     @Bean
+    public NewTopic partnerRequestsTopic() {
+        return TopicBuilder.name(Topics.PARTNER_REQUESTS).partitions(1).replicas(1).build();
+    }
+
+    @Bean
     public NewTopic orderCreatedTopic() {
         return TopicBuilder.name(Topics.ORDER_CREATED).partitions(PARTITIONS).replicas(1).build();
     }

@@ -8,6 +8,8 @@ public final class Topics {
     public static final String NOTIFICATION_REALTIME = "notification-requests-realtime";
     public static final String NOTIFICATION_BULK = "notification-requests-bulk";
 
+    public static final String PARTNER_REQUESTS = "partner-order-requests";
+
     private Topics() {
     }
 }

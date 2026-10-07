@@ -23,8 +23,26 @@ public class OrderController {
                     .body("productCode는 필수, quantity > 0, price >= 0 이어야 합니다");
         }
 
-        Order order = orderService.createOrder(request.productCode(), request.quantity(), request.price());
+        Order order = orderService.createOrder(request.productCode(), request.quantity(), request.price(), request.sellerId(), request.runId());
         return ResponseEntity.status(HttpStatus.CREATED).body(OrderResponse.from(order));
+    }
+
+    public record ChangeRequest(int quantity, double price) { }
+
+    @PatchMapping("/{orderId}")
+    public ResponseEntity<?> change(@PathVariable Long orderId, @RequestBody ChangeRequest request) {
+        if (request.quantity() <= 0 || request.price() < 0 || !Double.isFinite(request.price())) return ResponseEntity.badRequest().build();
+        return ResponseEntity.ok(OrderResponse.from(orderService.mutate(orderId, request.quantity(), request.price(), false)));
+    }
+
+    @PostMapping("/{orderId}/cancel")
+    public ResponseEntity<?> cancel(@PathVariable Long orderId) {
+        return ResponseEntity.ok(OrderResponse.from(orderService.mutate(orderId, 0, 0, true)));
+    }
+
+    @ExceptionHandler(IllegalStateException.class)
+    public ResponseEntity<?> conflict(IllegalStateException failure) {
+        return ResponseEntity.status(HttpStatus.CONFLICT).body(failure.getMessage());
     }
 
     @GetMapping("/{orderId}")

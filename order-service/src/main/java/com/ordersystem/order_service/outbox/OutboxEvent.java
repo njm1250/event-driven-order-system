@@ -25,7 +25,7 @@ public class OutboxEvent {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
-    @Column(name = "event_id", length = 36, nullable = false)
+    @Column(name = "event_id", length = 36, nullable = false, unique = true)
     private String eventId;
 
     @Column(name = "aggregate_id", nullable = false)
