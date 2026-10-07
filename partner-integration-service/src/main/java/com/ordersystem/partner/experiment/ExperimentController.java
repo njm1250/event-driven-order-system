@@ -19,11 +19,14 @@ import org.apache.kafka.common.TopicPartition;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.kafka.config.KafkaListenerEndpointRegistry;
 import org.springframework.kafka.core.KafkaTemplate;
+import org.springframework.kafka.support.SendResult;
 import org.springframework.web.bind.annotation.*;
 
+import java.lang.management.ManagementFactory;
 import java.sql.DriverManager;
 import java.time.Duration;
 import java.util.*;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -87,6 +90,23 @@ public class ExperimentController {
         result.put("dbWaiting", mx.getThreadsAwaitingConnection());
         result.put("heapUsed", Runtime.getRuntime().totalMemory() - Runtime.getRuntime().freeMemory());
         result.put("cpuNanos", ProcessHandle.current().info().totalCpuDuration().map(Duration::toNanos).orElse(0L));
+        long gcCount = 0, gcMillis = 0;
+        for (var gc : ManagementFactory.getGarbageCollectorMXBeans()) {
+            gcCount += Math.max(0, gc.getCollectionCount());
+            gcMillis += Math.max(0, gc.getCollectionTime());
+        }
+        result.put("gcCount", gcCount);
+        result.put("gcMillis", gcMillis);
+        result.put("threads", ManagementFactory.getThreadMXBean().getThreadCount());
+        // Producer-side Kafka latency: covers input sends and retry topic parking (acks=all).
+        Map<String, Object> producerMetrics = new LinkedHashMap<>();
+        producer.metrics().forEach((name, metric) -> {
+            if (name.group().equals("producer-metrics") && Set.of("request-latency-avg", "request-latency-max",
+                    "record-queue-time-avg", "record-send-rate").contains(name.name())) {
+                producerMetrics.put(name.name(), metric.metricValue());
+            }
+        });
+        result.put("producer", producerMetrics);
         var container = registry.getListenerContainer("partner");
         result.put("paused", container != null && container.isContainerPaused());
         if (settings.mode() == ProcessingMode.PARALLEL_CONSUMER) result.put("assigned", parallel.assignedPartitions());
@@ -144,13 +164,20 @@ public class ExperimentController {
             }
         }
         if (events.size() > settings.backlogLimit()) throw new IllegalArgumentException("Input batch exceeds capacity");
+        // Send the whole batch before waiting, so high input rates are not limited by one ack round trip
+        // per event. The idempotent producer keeps per-partition order.
+        List<CompletableFuture<SendResult<String, String>>> pending = new ArrayList<>();
         for (var e : events) {
             e.validate();
             String value = json.writeValueAsString(e);
             // One partition: pin it, so both sellers share it. Several: let the key hash decide.
-            var sent = (settings.partitions() == 1
+            pending.add(settings.partitions() == 1
                     ? producer.send(settings.topic(), 0, e.key(), value)
-                    : producer.send(settings.topic(), e.key(), value)).get(5, TimeUnit.SECONDS).getRecordMetadata();
+                    : producer.send(settings.topic(), e.key(), value));
+        }
+        for (int i = 0; i < events.size(); i++) {
+            var sent = pending.get(i).get(5, TimeUnit.SECONDS).getRecordMetadata();
+            var e = events.get(i);
             result.add(Map.of("eventId", e.eventId(), "sellerId", e.sellerId(), "partition", sent.partition(), "offset", sent.offset()));
         }
         return result;

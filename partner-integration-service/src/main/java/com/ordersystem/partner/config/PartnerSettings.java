@@ -24,6 +24,8 @@ public record PartnerSettings(
         @DefaultValue("1") int partitions,
         @DefaultValue("200") int inputBudget,
         @DefaultValue("5000") long callTimeoutMs,
+        @DefaultValue("1") short replicationFactor,
+        @DefaultValue("60000") long inboxDoneRetentionMs,
         @DefaultValue Breaker breaker) {
 
     public String retryTopic() {

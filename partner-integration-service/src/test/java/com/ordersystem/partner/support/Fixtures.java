@@ -10,7 +10,7 @@ public final class Fixtures {
 
     public static PartnerSettings settings(ProcessingMode mode, String partnerUrl) {
         return new PartnerSettings(mode, "partner-test", partnerUrl, "test", false,
-                4, 2, 2, 1000, 300, 200, 2000, 1, 200, 2000,
+                4, 2, 2, 1000, 300, 200, 2000, 1, 200, 2000, (short) 1, 60000,
                 new PartnerSettings.Breaker(300, 50, 50, 5, 3, 1000));
     }
 

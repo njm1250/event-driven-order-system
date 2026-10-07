@@ -72,6 +72,11 @@ public class InboxRepository {
         db.update("UPDATE inbox SET state='DONE',done_at=? WHERE event_id=?", doneAt, eventId);
     }
 
+    /** Completed rows are only history; the delivery ledger stays the duplicate guard after deletion. */
+    public int deleteDoneBefore(long cutoff, int limit) {
+        return db.update("DELETE FROM inbox WHERE state='DONE' AND done_at < ? LIMIT ?", cutoff, limit);
+    }
+
     public static class InboxFullException extends IllegalStateException {
         public InboxFullException() {
             super("Inbox capacity reached");

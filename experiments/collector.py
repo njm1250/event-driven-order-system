@@ -11,6 +11,7 @@ import urllib.request
 from pathlib import Path
 from evidence_paths import validate_evidence_path
 from docker_metrics import DockerMetrics, collector_peak_rss_bytes
+import topology
 
 def get(url):
     with urllib.request.urlopen(url, timeout=3) as response:
@@ -35,6 +36,8 @@ if __name__ == '__main__':
     io_bytes = 0
     start = time.monotonic()
     try:
+        # Containers on other hosts are sampled per host through /proc/stat by the controller instead.
+        if topology.DISTRIBUTED: raise RuntimeError('distributed run: no local containers')
         infra = DockerMetrics()
         infra_error = None
     except Exception as error:
@@ -45,7 +48,7 @@ if __name__ == '__main__':
             begin = time.monotonic()
             item = dict(time=int(time.time()*1000))
             try:
-                item['service'] = get('http://localhost:8090/observe')
+                item['service'] = get(topology.SERVICE_URL + '/observe')
             except Exception as e:
                 item['service'] = None
                 item['serviceError'] = str(e)
@@ -70,7 +73,8 @@ if __name__ == '__main__':
                 try:
                     repository=Path(__file__).resolve().parents[1]
                     query="SELECT (SELECT COUNT(*) FROM partner_effect) AS business_done,(SELECT COUNT(*) FROM inbox WHERE state<>'DONE') AS inbox_pending,(SELECT COUNT(*) FROM inbox) AS inbox_retained;"
-                    raw=subprocess.check_output(['docker','compose','-p','partner-isolation','-f',str(repository/'docker-compose.experiment.yml'),'exec','-T','mysql','mysql','-uroot','-plabpassword','--batch','partner_db','-e',query],text=True,stderr=subprocess.DEVNULL,timeout=3)
+                    db_args=topology.mysql_command('partner_db',query) if topology.MYSQL_HOST else ['docker','compose','-p','partner-isolation','-f',str(repository/'docker-compose.experiment.yml'),'exec','-T','mysql','mysql','-uroot','-plabpassword','--batch','partner_db','-e',query]
+                    raw=subprocess.check_output(db_args,text=True,stderr=subprocess.DEVNULL,timeout=3)
                     lines=raw.splitlines()
                     item['independentDb']={k:int(v) for k,v in zip(lines[0].split('\t'),lines[1].split('\t'))}
                 except Exception as e:item['independentDbError']=str(e)

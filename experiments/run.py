@@ -18,6 +18,8 @@ import uuid
 from pathlib import Path
 from evidence_paths import validate_evidence_path, DEFAULT_EVIDENCE
 from checker import check
+import topology
+from topology import SERVICE_URL
 
 REPO = Path(__file__).resolve().parents[1]
 COMPOSE = ['docker','compose','-p','partner-isolation','-f',str(REPO/'docker-compose.experiment.yml')]
@@ -39,7 +41,8 @@ def command(args, **kwargs):
     return subprocess.check_output(args, text=True, **kwargs)
 
 def sql(query, database='partner_db'):
-    out = command(COMPOSE+['exec','-T','mysql','mysql','-uroot','-plabpassword','--batch','--raw',database,'-e',query],stderr=subprocess.DEVNULL)
+    args = topology.mysql_command(database,query) if topology.MYSQL_HOST else COMPOSE+['exec','-T','mysql','mysql','-uroot','-plabpassword','--batch','--raw',database,'-e',query]
+    out = command(args,stderr=subprocess.DEVNULL)
     lines = out.splitlines()
     if not lines:
         return []
@@ -85,6 +88,11 @@ def launch(args, logfile, env=None):
     return process
 
 def stop(process, kill=False):
+    host=getattr(process,'remote_host',None)
+    if host:
+        # Closing ssh -tt hangs up the remote JVM; pkill makes sure no instance outlives the run.
+        try:topology.ssh(host,'pkill -KILL -f partner-integration-service/build/libs/app.jar || true')
+        except Exception:pass
     if process and process.poll() is None:
         process.kill() if kill else process.terminate()
         try: process.wait(timeout=8)
@@ -99,7 +107,23 @@ def java(module, root, extra=None, jar=None):
     env['SPRING_DATASOURCE_URL']=f'jdbc:mysql://localhost:13306/{name}'
     if extra: env.update({k:str(v) for k,v in extra.items()})
     target=jar or REPO/module/'build/libs/app.jar'
-    return launch(['java','-Xms64m','-Xmx192m','-XX:ActiveProcessorCount=4','-jar',str(target)],root/(module+'.log'),env)
+    jvm=['java','-Xms64m','-Xmx192m','-XX:ActiveProcessorCount=4','-jar']
+    if module=='partner-integration-service' and topology.PARTNER_HOST:
+        return remote_java(root,module,extra,jvm)
+    return launch(jvm+[str(target)],root/(module+'.log'),env)
+
+def remote_java(root, module, extra, jvm):
+    # Same JVM flags and limits on a dedicated host; the log streams back over ssh.
+    remote=dict(SPRING_KAFKA_BOOTSTRAP_SERVERS=topology.KAFKA_BOOTSTRAP,SPRING_DATASOURCE_URL=f'jdbc:mysql://{topology.MYSQL_HOST}:3306/partner_db',
+                SPRING_DATASOURCE_USERNAME='root',SPRING_DATASOURCE_PASSWORD='labpassword',CODE_VERSION=command(['git','rev-parse','HEAD']).strip(),
+                APP_REPLICATION_FACTOR=topology.REPLICATION_FACTOR,**{k:str(v) for k,v in (extra or {}).items()})
+    assignments=' '.join(f"{k}='{v}'" for k,v in remote.items())
+    script=f"pkill -KILL -f {module}/build/libs/app.jar; cd repo && exec env {assignments} {' '.join(jvm)} {module}/build/libs/app.jar"
+    handle=(root/(module+'.log')).open('a');HANDLES.append(handle)
+    process=subprocess.Popen(topology.ssh_args(topology.PARTNER_HOST,tty=True)+[script],stdin=subprocess.DEVNULL,stdout=handle,stderr=subprocess.STDOUT)
+    process.remote_host=topology.PARTNER_HOST
+    PROCESSES.append(process)
+    return process
 
 def new_root(base, name):
     root=base/(time.strftime('%Y%m%d-%H%M%S')+'-'+name+'-'+uuid.uuid4().hex[:5]);root.mkdir()
@@ -185,9 +209,37 @@ def snapshot(root):
     sizes=sql("SELECT TABLE_NAME,DATA_LENGTH,INDEX_LENGTH,TABLE_ROWS FROM information_schema.TABLES WHERE TABLE_SCHEMA='partner_db'")
     save(root/'storage.json',sizes)
     save(root/'storage-live.json',sql("SELECT (SELECT COUNT(*) FROM inbox) AS inbox_rows,(SELECT COALESCE(SUM(OCTET_LENGTH(payload)),0) FROM inbox) AS inbox_payload_bytes,(SELECT COUNT(*) FROM partner_effect) AS effect_rows,(SELECT COUNT(*) FROM partner_order) AS order_rows"))
-    save(root/'final-observe.json',http('http://localhost:8090/observe'))
-    (root/'infra-resources.jsonl').write_text(command(COMPOSE+['stats','--no-stream','--format','json']))
+    save(root/'final-observe.json',http(SERVICE_URL+'/observe'))
+    if not topology.DISTRIBUTED:(root/'infra-resources.jsonl').write_text(command(COMPOSE+['stats','--no-stream','--format','json']))
     return remote,effects,orders
+
+# Com_* counters are not exposed in performance_schema.global_status; statement counts come from the digest summary.
+MYSQL_STATUS=['Questions','Threads_connected','Innodb_os_log_fsyncs',
+              'Innodb_data_fsyncs','Innodb_os_log_written','Innodb_data_written','Innodb_row_lock_waits','Innodb_row_lock_time']
+
+def mysql_counters():
+    """Server-wide counters; the partner schema is the only active one during these runs."""
+    status={r['VARIABLE_NAME']:int(r['VARIABLE_VALUE']) for r in sql("SELECT VARIABLE_NAME,VARIABLE_VALUE FROM performance_schema.global_status WHERE VARIABLE_NAME IN ("+','.join(f"'{x}'" for x in MYSQL_STATUS)+")")}
+    statements={r['EVENT_NAME'].split('/')[-1]:(int(r['COUNT_STAR']),int(r['SUM_TIMER_WAIT'])) for r in sql("SELECT EVENT_NAME,COUNT_STAR,SUM_TIMER_WAIT FROM performance_schema.events_statements_summary_global_by_event_name WHERE EVENT_NAME IN ('statement/sql/insert','statement/sql/update','statement/sql/delete','statement/sql/select','statement/sql/commit')")}
+    # MISC on the redo log file is dominated by fsync.
+    files={r['EVENT_NAME'].split('/')[-1]:dict(writes=int(r['COUNT_WRITE']),writePs=int(r['SUM_TIMER_WRITE']),misc=int(r['COUNT_MISC']),miscPs=int(r['SUM_TIMER_MISC'])) for r in sql("SELECT EVENT_NAME,COUNT_WRITE,SUM_TIMER_WRITE,COUNT_MISC,SUM_TIMER_MISC FROM performance_schema.file_summary_by_event_name WHERE EVENT_NAME IN ('wait/io/file/innodb/innodb_log_file','wait/io/file/innodb/innodb_data_file')")}
+    return dict(time=now(),status=status,statements=statements,files=files)
+
+def mysql_usage(before, after):
+    seconds=(after['time']-before['time'])/1000
+    delta=lambda key:after['status'].get(key,0)-before['status'].get(key,0)
+    commits=after['statements'].get('commit',(0,0))[0]-before['statements'].get('commit',(0,0))[0]
+    result=dict(seconds=round(seconds,2),commitsPerSecond=round(commits/seconds,1),questionsPerSecond=round(delta('Questions')/seconds,1),
+                redoFsyncs=delta('Innodb_os_log_fsyncs'),redoMBWritten=round(delta('Innodb_os_log_written')/1048576,2),
+                rowLockWaits=delta('Innodb_row_lock_waits'),rowLockTimeMs=delta('Innodb_row_lock_time'),threadsConnected=after['status'].get('Threads_connected'))
+    for name,(count,ps) in after['statements'].items():
+        c=count-before['statements'].get(name,(0,0))[0];t=ps-before['statements'].get(name,(0,0))[1]
+        result[f'{name}Count']=c;result[f'{name}AvgUs']=round(t/c/1e6,1) if c else None
+    log=after['files'].get('innodb_log_file');log0=before['files'].get('innodb_log_file')
+    if log and log0:
+        m=log['misc']-log0['misc'];result['redoMiscAvgUs']=round((log['miscPs']-log0['miscPs'])/m/1e6,1) if m else None
+        w=log['writes']-log0['writes'];result['redoWriteAvgUs']=round((log['writePs']-log0['writePs'])/w/1e6,1) if w else None
+    return result
 
 def percentile(values, quantile):
     return sorted(values)[max(0,math.ceil(quantile*len(values))-1)] if values else None
@@ -197,7 +249,7 @@ def report(root, expected, result):
     rows=[]
     for seller in ['normal','slow']:
         latencies=[x['effect_at']-x['occurred_at'] for x in remote['effects'] if (x['seller_id']=='slow')==(seller=='slow')]
-        rows.append(dict(seller=seller,p95Ms=percentile(latencies,.95),p99Ms=percentile(latencies,.99),maxMs=max(latencies,default=0),samples=len(latencies)))
+        rows.append(dict(seller=seller,p50Ms=percentile(latencies,.5),p95Ms=percentile(latencies,.95),p99Ms=percentile(latencies,.99),maxMs=max(latencies,default=0),samples=len(latencies)))
     observations=[json.loads(x) for x in (root/'observations.jsonl').read_text().splitlines()] if (root/'observations.jsonl').exists() else []
     traces=[]
     for line in (root/'partner-integration-service.log').read_text().splitlines():
@@ -248,6 +300,22 @@ def report(root, expected, result):
     metrics['externalRequests']=len(remote['attempts'])
     # Market input keeps arriving after the fault is removed; measure the tail after the last input too.
     metrics['slowDrainAfterInputMs']=max(0,external_slow_done-input_done) if input_done else None
+    started=next((x['time'] for x in controller if x['action']=='workload_started'),None)
+    occurred=[x['occurred_at'] for x in remote['effects']];done=[x['effect_at'] for x in remote['effects']]
+    metrics['inputEventsPerSecond']=round(len(expected)/((input_done-started)/1000),1) if input_done and started and input_done>started else None
+    metrics['deliveredEventsPerSecond']=round(len(done)/((max(done)-min(occurred))/1000),1) if done and max(done)>min(occurred) else None
+    metrics['peakCommittedRemaining']=max((x.get('committedRemaining') or 0 for x in service_samples),default=None)
+    usage=next((x for x in controller if x['action']=='resource_usage'),None)
+    metrics['hosts']=usage['hosts'] if usage else None
+    metrics['mysql']=usage['mysql'] if usage else None
+    before_observe=json.loads((root/'before-load-observe.json').read_text()) if (root/'before-load-observe.json').exists() else {}
+    final_observe=json.loads((root/'final-observe.json').read_text())
+    metrics['gcCount']=final_observe.get('gcCount',0)-before_observe.get('gcCount',0) if 'gcCount' in final_observe else None
+    metrics['gcMillis']=final_observe.get('gcMillis',0)-before_observe.get('gcMillis',0) if 'gcMillis' in final_observe else None
+    produce=[(x.get('producer') or {}).get('request-latency-avg') for x in service_samples]
+    produce=[x for x in produce if isinstance(x,(int,float)) and x==x]
+    metrics['producerRequestLatencyAvgMsPeak']=round(max(produce),2) if produce else None
+    metrics['peakDbConnectionsWaiting']=max((x.get('dbWaiting',0) for x in service_samples),default=None)
     if (root/'input-times.json').exists():
         inputs=json.loads((root/'input-times.json').read_text())
         source_rows=[]
@@ -258,20 +326,26 @@ def report(root, expected, result):
     save(root/'summary.json',metrics)
     return metrics
 
-def run_case(base, mode, scenario, repeat, observe=True, workload='pair', partitions=1):
-    label=f'{mode}-{scenario}' if workload=='pair' else f'{mode}-{scenario}-{workload}-p{partitions}'
+def run_case(base, mode, scenario, repeat, observe=True, workload='pair', partitions=1, rate=80, duration=12):
+    label=f'{mode}-{scenario}' if workload=='pair' else f'{mode}-{scenario}-{workload}-p{partitions}'+(f'-{rate}eps' if workload=='sweep' else '')
     root=new_root(base,f'{label}-r{repeat}')
     topic='partner-'+uuid.uuid4().hex[:16]; group=topic+'-group'
-    orders=24 if workload=='pair' else MARKET_ORDERS
+    orders={'pair':24,'market':MARKET_ORDERS,'sweep':rate*duration//3}[workload]
+    # pair/market keep the original 8 events per 100ms; sweep sets the arrival rate explicitly.
+    per_tick=8 if workload!='sweep' else max(1,rate//10)
     settings=dict(mode=mode,scenario=scenario,repeat=repeat,topic=topic,group=group,observe=observe,backlogLimit=8 if scenario=='backlog' else 200,
-                  workload=workload,partitions=partitions,orders=orders,sellers=2 if workload=='pair' else MARKET_SELLERS)
+                  workload=workload,partitions=partitions,orders=orders,sellers=2 if workload=='pair' else MARKET_SELLERS,
+                  targetEventsPerSecond=per_tick*10,distributed=topology.DISTRIBUTED,replicationFactor=topology.REPLICATION_FACTOR)
     metadata(root,settings)
     sql('DELETE FROM inbox; DELETE FROM partner_effect; DELETE FROM partner_order') if sql('SHOW TABLES') else None
     if REMOTE_PARTNER:
         http(PARTNER_API+'/reset',dict(name=root.name));mock=None
     else:mock=launch([sys.executable,str(REPO/'experiments/mock-partner-api/server.py'),'--database',str(root/'external.sqlite')],root/'mock.log')
     extra=dict(PARTNER_MODE=mode,PARTNER_TOPIC=topic,PARTNER_GROUP=group,APP_PARTITIONS=partitions,APP_PARTNER_URL=PARTNER_API)
-    if workload!='pair':extra['APP_INPUT_BUDGET']=5000
+    if workload=='market':extra['APP_INPUT_BUDGET']=5000
+    if workload=='sweep':
+        # Long, fast inputs: keep completed inbox rows only briefly so the retained-row bound is not the limit.
+        extra.update(APP_INPUT_BUDGET=200000,APP_RETAINED_LIMIT=20000,APP_INBOX_DONE_RETENTION_MS=2000)
     if scenario=='rebalance':extra['SPRING_KAFKA_CONSUMER_PROPERTIES_MAX_POLL_INTERVAL_MS']=2000
     if scenario=='backlog':extra['APP_BACKLOG_LIMIT']=8
     if not observe:extra['APP_TRACE_ENABLED']='false'
@@ -286,19 +360,28 @@ def run_case(base, mode, scenario, repeat, observe=True, workload='pair', partit
     try:
         wait_for(lambda:http(PARTNER_API+'/health'),label='mock ready')
         service=java('partner-integration-service',root,extra)
-        wait_for(lambda:http('http://localhost:8090/observe').get('assigned',0)>=(1 if mode=='inbox' else partitions),label='partner assignment ready')
-        http('http://localhost:8090/load',[])
+        wait_for(lambda:http(SERVICE_URL+'/observe').get('assigned',0)>=(1 if mode=='inbox' else partitions),label='partner assignment ready')
+        http(SERVICE_URL+'/load',[])
         # Allow assignment and capture 1s of fault-free data before injection.
         if observe:
-            collector=launch([sys.executable,str(REPO/'experiments/collector.py'),'--directory',str(root),'--pids',f'{service.pid},{mock.pid}' if mock else str(service.pid)],root/'collector.log')
+            collector=launch([sys.executable,str(REPO/'experiments/collector.py'),'--directory',str(root),'--pids','' if topology.PARTNER_HOST else (f'{service.pid},{mock.pid}' if mock else str(service.pid))],root/'collector.log')
         time.sleep(1)
-        save(root/'before-load-observe.json',http('http://localhost:8090/observe'))
+        save(root/'before-load-observe.json',http(SERVICE_URL+'/observe'))
         save(root/'db-io-before.json',sql("SELECT OBJECT_NAME,COUNT_READ,COUNT_WRITE,COUNT_FETCH,COUNT_INSERT,COUNT_UPDATE,COUNT_DELETE FROM performance_schema.table_io_waits_summary_by_table WHERE OBJECT_SCHEMA='partner_db'"))
+        hosts_before=topology.sample_hosts();mysql_before=mysql_counters()
         record('workload_started')
         expected=dataset(root.name,orders,3,workload)
         if scenario=='hotkey':
             for event in expected:event['sellerId']='slow' if event['orderId']==1 else 'normal'
         save(root/'expected.json',[])
+        if scenario=='broker-failover':
+            # One of three brokers dies mid-input and returns 10s later (needs RF=3, min ISR 2).
+            if len(topology.KAFKA_HOSTS)<3:raise AssertionError('broker-failover needs three brokers')
+            def fail_broker():
+                time.sleep(3);record('broker_killed',host=topology.KAFKA_HOSTS[1])
+                topology.ssh(topology.KAFKA_HOSTS[1],'docker kill kafka')
+                time.sleep(10);topology.ssh(topology.KAFKA_HOSTS[1],'docker start kafka');record('broker_restarted')
+            thread=threading.Thread(target=fail_broker);thread.start();threads.append(thread)
         if scenario in {'api','backlog','broker-kill','hotkey','park-kill','hang'}:
             # hang: the API answers just inside the 5s client timeout, as a stuck dependency does.
             delay=3000 if scenario=='hang' else 600
@@ -313,7 +396,7 @@ def run_case(base, mode, scenario, repeat, observe=True, workload='pair', partit
             http(PARTNER_API+'/control',dict(sellerId='slow',dropResponse=True))
             record('fault_injected',kind='response_loss')
         elif scenario=='db':
-            http('http://localhost:8090/fault/db',dict(durationMs=3000))
+            http(SERVICE_URL+'/fault/db',dict(durationMs=3000))
             record('fault_injected',kind='shared_db_pool',durationMs=3000)
         gate=None
         if scenario in {'ack-kill','ack-release','inbox-kill','worker-kill','external-kill','business-before-kill','inbox-before-kill','rebalance','park-kill'}:
@@ -321,12 +404,16 @@ def run_case(base, mode, scenario, repeat, observe=True, workload='pair', partit
             (root/'hooks'/f'{gate}.arm').touch()
             record('gate_armed',gate=gate)
         placements=[]
-        # All modes get identical event count, interleaving and 100ms batch arrival cadence.
-        for i in range(0,len(expected),8):
-            for event in expected[i:i+8]:event['occurredAt']=now()
-            save(root/'expected.json',expected[:i+8])
-            placements.extend(http('http://localhost:8090/load',expected[i:i+8]))
-            time.sleep(.1)
+        # All modes get identical event count, interleaving and arrival cadence (one batch per 100ms).
+        tick=time.monotonic();last_saved=0
+        for i in range(0,len(expected),per_tick):
+            for event in expected[i:i+per_tick]:event['occurredAt']=now()
+            if workload!='sweep' or time.monotonic()-last_saved>=1:
+                save(root/'expected.json',expected[:i+per_tick]);last_saved=time.monotonic()
+            placements.extend(http(SERVICE_URL+'/load',expected[i:i+per_tick],timeout=30))
+            tick+=0.1
+            time.sleep(max(0,tick-time.monotonic()))
+        save(root/'expected.json',expected)
         save(root/'placements.json',placements)
         record('workload_input_done',events=len(expected))
         if partitions==1 and {x['partition'] for x in placements}!={0}:raise AssertionError('Sellers did not share partition 0')
@@ -345,7 +432,7 @@ def run_case(base, mode, scenario, repeat, observe=True, workload='pair', partit
         if gate:
             reached=wait_for(lambda:(root/'hooks'/f'{gate}.reached').exists(),label='actual boundary')
             time.sleep(4 if scenario=='rebalance' else 2)
-            save(root/'at-boundary-observe.json',http('http://localhost:8090/observe'))
+            save(root/'at-boundary-observe.json',http(SERVICE_URL+'/observe'))
             save(root/'at-boundary-effects.json',sql('SELECT * FROM partner_effect'))
             save(root/'at-boundary-inbox.json',sql('SELECT event_id,state,kafka_offset FROM inbox'))
             record('gate_observed',gate=gate,eventId=(root/'hooks'/f'{gate}.reached').read_text().splitlines()[0])
@@ -353,16 +440,19 @@ def run_case(base, mode, scenario, repeat, observe=True, workload='pair', partit
                 stop(service,kill=True);record('process_killed',gate=gate)
                 (root/'hooks'/f'{gate}.arm').unlink()
                 service=java('partner-integration-service',root,extra)
-                wait_for(lambda:http('http://localhost:8090/observe'),label='restarted service')
+                wait_for(lambda:http(SERVICE_URL+'/observe'),label='restarted service')
                 record('process_restarted')
             else:
                 (root/'hooks'/f'{gate}.arm').unlink();record('gate_released')
         if scenario=='redelivery':
-            http('http://localhost:8090/load',expected)
+            http(SERVICE_URL+'/load',expected)
             record('duplicate_input')
-        wait_for(lambda:len(sql('SELECT event_id FROM partner_effect'))==len(expected),timeout=180,label='all business effects')
+        wait_for(lambda:sql('SELECT COUNT(*) AS n FROM partner_effect')[0]['n']==str(len(expected)),timeout=600 if workload=='sweep' else 180,label='all business effects')
+        mysql_after=mysql_counters();hosts_after=topology.sample_hosts()
+        save(root/'mysql-counters.json',dict(before=mysql_before,after=mysql_after))
+        record('resource_usage',hosts=topology.host_usage(hosts_before,hosts_after,(mysql_after['time']-mysql_before['time'])/1000),mysql=mysql_usage(mysql_before,mysql_after))
         for thread in threads:thread.join()
-        wait_for(lambda:http('http://localhost:8090/observe').get('committedRemaining')==0,timeout=30,label='broker commit drained')
+        wait_for(lambda:http(SERVICE_URL+'/observe').get('committedRemaining')==0,timeout=30,label='broker commit drained')
         time.sleep(.5)
         remote,effects,orders=snapshot(root)
         result=check(expected,remote,effects,orders);save(root/'checker.json',result)
@@ -405,9 +495,11 @@ if __name__ == '__main__':
     p.add_argument('--evidence',default=str(DEFAULT_EVIDENCE))
     p.add_argument('--baseline',action='store_true')
     p.add_argument('--mode',choices=MODES)
-    p.add_argument('--workload',default='pair',choices=['pair','market'])
+    p.add_argument('--workload',default='pair',choices=['pair','market','sweep'])
+    p.add_argument('--rate',type=int,default=80,help='sweep: events per second')
+    p.add_argument('--duration',type=int,default=12,help='sweep: seconds of input')
     p.add_argument('--partitions',type=int,default=1)
-    p.add_argument('--scenario',default='api',choices=['clean','api','db','ack-kill','ack-release','inbox-kill','worker-kill','external-kill','response-loss','redelivery','retry','backlog','business-before-kill','inbox-before-kill','rebalance','broker-kill','hotkey','park-kill','hang'])
+    p.add_argument('--scenario',default='api',choices=['clean','api','db','ack-kill','ack-release','inbox-kill','worker-kill','external-kill','response-loss','redelivery','retry','backlog','business-before-kill','inbox-before-kill','rebalance','broker-kill','hotkey','park-kill','hang','broker-failover'])
     p.add_argument('--repeat',type=int,default=1)
     p.add_argument('--suite',action='store_true')
     p.add_argument('--no-observe',action='store_true')
@@ -432,7 +524,7 @@ if __name__ == '__main__':
                     run_case(evidence,mode,'clean',repeat,False)
             comparison_suite(evidence)
         elif args.comparison:comparison_suite(evidence)
-        else:run_case(evidence,args.mode or 'sequential',args.scenario,args.repeat,not args.no_observe,args.workload,args.partitions)
+        else:run_case(evidence,args.mode or 'sequential',args.scenario,args.repeat,not args.no_observe,args.workload,args.partitions,args.rate,args.duration)
     finally:
         for process in PROCESSES:stop(process)
         for handle in HANDLES:handle.close()

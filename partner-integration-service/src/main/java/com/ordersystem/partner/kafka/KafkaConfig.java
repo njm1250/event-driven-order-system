@@ -31,9 +31,9 @@ public class KafkaConfig {
     @Bean
     KafkaAdmin.NewTopics partnerTopics(PartnerSettings settings) {
         List<NewTopic> topics = new ArrayList<>();
-        topics.add(new NewTopic(settings.topic(), settings.partitions(), (short) 1).configs(RETENTION));
+        topics.add(new NewTopic(settings.topic(), settings.partitions(), settings.replicationFactor()).configs(RETENTION));
         if (settings.mode() == ProcessingMode.RETRY_TOPIC) {
-            topics.add(new NewTopic(settings.retryTopic(), 1, (short) 1).configs(RETENTION));
+            topics.add(new NewTopic(settings.retryTopic(), 1, settings.replicationFactor()).configs(RETENTION));
         }
         return new KafkaAdmin.NewTopics(topics.toArray(NewTopic[]::new));
     }

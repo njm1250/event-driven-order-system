@@ -12,12 +12,18 @@ import org.springframework.stereotype.Component;
 
 import java.util.List;
 import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 
 /**
  * Worker pool for the asyncAcks and inbox modes. Retry waits are stored as a time on the task or
  * inbox row instead of sleeping, so a failing seller never holds a worker while it waits.
+ *
+ * Dispatch runs as soon as a worker frees up or new work arrives; the 20ms tick only catches
+ * retry times that come due; dispatching only on the tick would cap starts at the worker count per tick.
  */
 @Component
 public class WorkerDispatcher {
@@ -28,6 +34,12 @@ public class WorkerDispatcher {
     private final PartnerOrderProcessor processor;
     private final Tracer tracer;
     private final ThreadPoolExecutor executor;
+    private final ExecutorService wakeups = Executors.newSingleThreadExecutor(r -> {
+        Thread thread = new Thread(r, "dispatch-wakeup");
+        thread.setDaemon(true);
+        return thread;
+    });
+    private final AtomicBoolean wakeRequested = new AtomicBoolean();
 
     public WorkerDispatcher(PartnerSettings settings, InboxRepository inbox, AsyncPendingQueue pending,
                             AdmissionPolicy admission, PartnerOrderProcessor processor, Tracer tracer) {
@@ -41,8 +53,17 @@ public class WorkerDispatcher {
                 new ArrayBlockingQueue<>(settings.workers()));
     }
 
+    /** Coalesces bursts of signals into one extra dispatch pass. */
+    public void wake() {
+        if (!settings.mode().usesWorkerPool() || !wakeRequested.compareAndSet(false, true)) return;
+        wakeups.execute(() -> {
+            wakeRequested.set(false);
+            dispatch();
+        });
+    }
+
     @Scheduled(fixedDelay = 20)
-    public void dispatch() {
+    public synchronized void dispatch() {
         if (!settings.mode().usesWorkerPool()) return;
         try {
             List<PartnerTask> candidates = settings.mode() == ProcessingMode.INBOX
@@ -92,6 +113,7 @@ public class WorkerDispatcher {
             // Leave the queue before releasing the order key, so a stale head is never re-admitted.
             if (success && task.ack() != null) pending.completed(task);
             admission.release(task);
+            wake();
         }
     }
 }

@@ -7,6 +7,7 @@ import com.ordersystem.partner.PartnerTask;
 import com.ordersystem.partner.Tracer;
 import com.ordersystem.partner.config.PartnerSettings;
 import com.ordersystem.partner.dispatch.AsyncPendingQueue;
+import com.ordersystem.partner.dispatch.WorkerDispatcher;
 import com.ordersystem.partner.inbox.InboxRepository;
 import com.ordersystem.partner.processing.PartnerOrderProcessor;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
@@ -28,12 +29,13 @@ public class PartnerListener {
     private final AsyncPendingQueue pending;
     private final RetryLane retryLane;
     private final TransactionTemplate tx;
+    private final WorkerDispatcher dispatcher;
     private final Tracer tracer;
     private final Map<Integer, Long> receivedOffsets = new ConcurrentHashMap<>();
 
     public PartnerListener(PartnerSettings settings, ObjectMapper json, PartnerOrderProcessor processor,
                            InboxRepository inbox, AsyncPendingQueue pending, RetryLane retryLane,
-                           TransactionTemplate tx, Tracer tracer) {
+                           TransactionTemplate tx, WorkerDispatcher dispatcher, Tracer tracer) {
         this.settings = settings;
         this.json = json;
         this.processor = processor;
@@ -41,6 +43,7 @@ public class PartnerListener {
         this.pending = pending;
         this.retryLane = retryLane;
         this.tx = tx;
+        this.dispatcher = dispatcher;
         this.tracer = tracer;
     }
 
@@ -59,7 +62,10 @@ public class PartnerListener {
         switch (settings.mode()) {
             case INBOX -> storeInInbox(task, record.value());
             case SEQUENTIAL, CIRCUIT_BREAKER -> deliverInPlace(task);
-            case ASYNC -> pending.add(task);
+            case ASYNC -> {
+                pending.add(task);
+                dispatcher.wake();
+            }
             case RETRY_TOPIC -> deliverOrPark(task);
             case PARALLEL_CONSUMER -> throw new IllegalStateException("Parallel Consumer does not use this listener");
         }
@@ -82,6 +88,7 @@ public class PartnerListener {
         BoundaryGate.hit("inbox_commit", task.eventId());
         task.ack().acknowledge();
         tracer.trace("ack_requested", task, "meaning", "inbox handoff");
+        dispatcher.wake();
     }
 
     /** Blocks this partition until the operation is delivered, however long that takes. */

@@ -52,4 +52,17 @@ class InboxRepositoryTest extends MySqlTestBase {
         assertThat(inbox.findReady(now, 10)).isEmpty();
         assertThat(inbox.findReady(now + 300, 10)).hasSize(1);
     }
+
+    @Test
+    void purgeDeletesOnlyCompletedRowsOlderThanTheCutoff() throws Exception {
+        store(task("normal", 1, 1), 200);
+        store(task("normal", 2, 1), 200);
+        store(task("normal", 3, 1), 200);
+        inbox.markDone("normal-1-1", 1_000);
+        inbox.markDone("normal-2-1", 5_000);
+
+        assertThat(inbox.deleteDoneBefore(2_000, 100)).isEqualTo(1);
+        assertThat(db.queryForList("SELECT event_id FROM inbox ORDER BY event_id", String.class))
+                .containsExactly("normal-2-1", "normal-3-1");
+    }
 }
