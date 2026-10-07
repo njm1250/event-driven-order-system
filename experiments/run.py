@@ -90,7 +90,7 @@ def launch(args, logfile, env=None):
 def stop(process, kill=False):
     host=getattr(process,'remote_host',None)
     if host:
-        # Closing ssh -tt hangs up the remote JVM; pkill makes sure no instance outlives the run.
+        # No partner JVM may outlive its run on the shared partner host.
         try:topology.ssh(host,"pkill -KILL -f 'partner-integration-servic[e]/build/libs/app.jar' || true")
         except Exception:pass
     if process and process.poll() is None:
@@ -112,8 +112,30 @@ def java(module, root, extra=None, jar=None):
         return remote_java(root,module,extra,jvm)
     return launch(jvm+[str(target)],root/(module+'.log'),env)
 
+class RemoteJvm:
+    """Partner JVM on its own host. It logs to a file there so log transport does not run on the
+    measured host while it works; fetch_log() copies the log back."""
+    def __init__(self, host, pid, remote_log, local_log):
+        self.host,self.pid,self.remote_host,self.remote_log,self.local_log=host,pid,host,remote_log,local_log
+    def alive(self):
+        return topology.ssh(self.host,f'kill -0 {self.pid} 2>/dev/null && echo up || echo down').strip()=='up'
+    def poll(self):
+        return None if self.alive() else 0
+    def terminate(self):
+        topology.ssh(self.host,f'kill {self.pid} 2>/dev/null || true')
+    def kill(self):
+        topology.ssh(self.host,f'kill -9 {self.pid} 2>/dev/null || true')
+    def wait(self, timeout=None):
+        deadline=time.monotonic()+(timeout or 3600)
+        while self.alive():
+            if time.monotonic()>deadline:raise subprocess.TimeoutExpired('remote java',timeout)
+            time.sleep(0.5)
+        return 0
+    def fetch_log(self):
+        self.local_log.write_text(topology.ssh(self.host,f'cat {self.remote_log}',timeout=120))
+
 def remote_java(root, module, extra, jvm):
-    # Same JVM flags and limits on a dedicated host; the log streams back over ssh.
+    # Same JVM flags and limits on a dedicated host.
     remote=dict(SPRING_KAFKA_BOOTSTRAP_SERVERS=topology.KAFKA_BOOTSTRAP,SPRING_DATASOURCE_URL=f'jdbc:mysql://{topology.MYSQL_HOST}:3306/partner_db',
                 SPRING_DATASOURCE_USERNAME='root',SPRING_DATASOURCE_PASSWORD='labpassword',CODE_VERSION=command(['git','rev-parse','HEAD']).strip(),
                 APP_REPLICATION_FACTOR=topology.REPLICATION_FACTOR,**{k:str(v) for k,v in (extra or {}).items()})
@@ -121,10 +143,9 @@ def remote_java(root, module, extra, jvm):
     # Separate call: a pkill inside the launch command would match that command line and kill itself.
     try:topology.ssh(topology.PARTNER_HOST,f"pkill -KILL -f '{module[:-1]}[{module[-1]}]/build/libs/app.jar' || true")
     except Exception:pass
-    script=f"cd repo && exec env {assignments} {' '.join(jvm)} {module}/build/libs/app.jar"
-    handle=(root/(module+'.log')).open('a');HANDLES.append(handle)
-    process=subprocess.Popen(topology.ssh_args(topology.PARTNER_HOST,tty=True)+[script],stdin=subprocess.DEVNULL,stdout=handle,stderr=subprocess.STDOUT)
-    process.remote_host=topology.PARTNER_HOST
+    remote_log=f'/home/ec2-user/logs/{root.name}.log'
+    pid=topology.ssh(topology.PARTNER_HOST,f"mkdir -p logs; cd repo && nohup env {assignments} {' '.join(jvm)} {module}/build/libs/app.jar >> {remote_log} 2>&1 < /dev/null & echo $!").strip()
+    process=RemoteJvm(topology.PARTNER_HOST,int(pid),remote_log,root/(module+'.log'))
     PROCESSES.append(process)
     return process
 
@@ -461,6 +482,7 @@ def run_case(base, mode, scenario, repeat, observe=True, workload='pair', partit
         result=check(expected,remote,effects,orders);save(root/'checker.json',result)
         if collector:
             (root/'collector.stop').touch();collector.wait(timeout=8)
+        if isinstance(service,RemoteJvm):service.fetch_log()
         metrics=report(root,expected,result)
         record('completed',passed=result['passed'])
         print(root.name,json.dumps(dict(passed=result['passed'],latency=metrics['latency'],peakDbWaiting=metrics['peakDbWaiting'],recoveryMs=metrics['recoveryMs'])),flush=True)
