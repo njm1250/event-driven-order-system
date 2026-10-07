@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # One bounded AWS session for the representative comparison.
 #   system host (SYSTEM_TYPE, default m7i-flex.large): Kafka, MySQL, partner service, controller, collector
-#   partner host (PARTNER_TYPE, default c7i-flex.large): mock seller API, reached over the VPC
-# The defaults are AWS Free plan eligible; a paid account can pass m6i.xlarge / m6i.large instead.
+#   partner host (PARTNER_TYPE, default m7i-flex.large): mock seller API, reached over the VPC
+# The defaults are AWS Free plan eligible and offered in ap-northeast-2a; a paid account can pass m6i types.
 # Three independent stops: OS shutdown timer (terminate on shutdown), an EventBridge Scheduler
 # terminate at the deadline, and the cleanup trap below. Only resources created here are removed.
 set -euo pipefail
@@ -10,7 +10,7 @@ set -euo pipefail
 region=ap-northeast-2
 max_hours=${MAX_HOURS:-5}
 system_type=${SYSTEM_TYPE:-m7i-flex.large}
-partner_type=${PARTNER_TYPE:-c7i-flex.large}
+partner_type=${PARTNER_TYPE:-m7i-flex.large}
 repo_dir="$(cd "$(dirname "$0")/../.." && pwd)"
 out_dir="${1:?usage: session.sh <evidence dir>}"
 mkdir -p "$out_dir"
@@ -61,6 +61,12 @@ subnet=$(aws_ ec2 describe-subnets --filters Name=vpc-id,Values="$vpc" Name=avai
 ami=$(aws_ ssm get-parameter --name /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64 \
   --query Parameter.Value --output text)
 record ami "$ami"; record subnet "$subnet"
+# Refuse before creating anything if either type is not offered in this AZ.
+for type in "$system_type" "$partner_type"; do
+  offered=$(aws_ ec2 describe-instance-type-offerings --location-type availability-zone \
+    --filters Name=location,Values=${region}a Name=instance-type,Values="$type" --query 'length(InstanceTypeOfferings)' --output text)
+  [[ "$offered" == 1 ]] || { note "$type is not offered in ${region}a"; exit 1; }
+done
 
 aws_ ec2 create-key-pair --key-name "$session" --query KeyMaterial --output text > "$key_file"
 chmod 600 "$key_file"; record keyPair "$session"
