@@ -35,7 +35,9 @@ def run(base, mode, boundary='none', concurrent_duplicate=False, poll_ms=100, se
     try:
         procs.append(launch([sys.executable,str(REPO/'experiments/mock-partner-api/server.py'),'--database',str(root/'external.sqlite')],root/'mock.log'))
         wait_for(lambda:http('http://localhost:8099/health'))
-        procs.append(java('partner-integration-service',root,dict(PARTNER_MODE=mode,PARTNER_TOPIC='partner-order-requests',PARTNER_GROUP='e2e-'+uuid.uuid4().hex)))
+        partner=dict(PARTNER_MODE=mode,PARTNER_TOPIC='partner-order-requests',PARTNER_GROUP='e2e-'+uuid.uuid4().hex,APP_INBOX_BATCH_INGEST='false')
+        if mode=='inbox-batch':partner.update(PARTNER_MODE='inbox',APP_INBOX_BATCH_INGEST='true')
+        procs.append(java('partner-integration-service',root,partner))
         wait_for(lambda:http('http://localhost:8090/observe'))
         if (REPO/'experiments/migrations/001-source-schema.sql').exists():
             command(COMPOSE+['exec','-T','mysql','mysql','-uroot','-plabpassword'],input=(REPO/'experiments/migrations/001-source-schema.sql').read_text(),stderr=__import__('subprocess').DEVNULL)

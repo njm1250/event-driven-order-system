@@ -104,7 +104,7 @@ services:
       SPRING_DATASOURCE_PASSWORD: ${MYSQL_ROOT_PASSWORD:-labpassword}
       SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
       APP_PARTNER_URL: http://mock-partner-api:8099
-      PARTNER_MODE: ${PARTNER_MODE:-sequential}
+      PARTNER_MODE: ${PARTNER_MODE:-inbox}
     depends_on:
       kafka: {condition: service_healthy}
       mysql: {condition: service_healthy}
@@ -115,7 +115,8 @@ services:
       context: .
       dockerfile: experiments/mock-partner-api/Dockerfile
     ports: ["127.0.0.1:8099:8099"]
-    volumes: ["${EVIDENCE_DIR:-../experiment-evidence/manual}:/evidence"]
+    volumes: ["mock-ledger:/evidence"]
 
 volumes:
   mysql-data:
+  mock-ledger:

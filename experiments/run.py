@@ -370,6 +370,8 @@ def run_case(base, mode, scenario, repeat, observe=True, workload='pair', partit
     else:mock=launch([sys.executable,str(REPO/'experiments/mock-partner-api/server.py'),'--database',str(root/'external.sqlite')],root/'mock.log')
     extra=dict(PARTNER_MODE=mode,PARTNER_TOPIC=topic,PARTNER_GROUP=group,APP_PARTITIONS=partitions,APP_PARTNER_URL=PARTNER_API)
     # inbox-batch is the inbox mode with one transaction per poll (inbox v2).
+    # inbox is v1 (one transaction per record); inbox-batch is v2 (one per poll). Set both explicitly.
+    if mode=='inbox':extra['APP_INBOX_BATCH_INGEST']='false'
     if mode=='inbox-batch':extra.update(PARTNER_MODE='inbox',APP_INBOX_BATCH_INGEST='true')
     if workload=='market':extra['APP_INPUT_BUDGET']=5000
     if workload=='sweep':
