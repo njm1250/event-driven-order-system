@@ -45,8 +45,9 @@ public class KafkaConfig {
         var factory = baseFactory(consumerFactory);
         // The inbox has a single ingestion consumer because it is the authority for the capacity check.
         factory.setConcurrency(settings.mode() == ProcessingMode.INBOX ? 1 : settings.partitions());
-        // Parallel Consumer owns its own KafkaConsumer instead of a Spring listener container.
-        factory.setAutoStartup(settings.mode() != ProcessingMode.PARALLEL_CONSUMER);
+        // Parallel Consumer owns its own KafkaConsumer; inbox v2 uses the batch listener instead.
+        factory.setAutoStartup(settings.mode() != ProcessingMode.PARALLEL_CONSUMER
+                && !(settings.mode() == ProcessingMode.INBOX && settings.inboxBatchIngest()));
         factory.getContainerProperties().setAsyncAcks(settings.mode() == ProcessingMode.ASYNC);
         factory.getContainerProperties().setConsumerRebalanceListener(new ConsumerAwareRebalanceListener() {
             @Override
@@ -60,6 +61,16 @@ public class KafkaConfig {
                 tracer.getObject().trace("partitions_assigned", null, "partitions", partitions.toString());
             }
         });
+        return factory;
+    }
+
+    @Bean
+    ConcurrentKafkaListenerContainerFactory<String, String> inboxBatchFactory(
+            ConsumerFactory<String, String> consumerFactory, PartnerSettings settings) {
+        var factory = baseFactory(consumerFactory);
+        factory.setBatchListener(true);
+        factory.setConcurrency(1);
+        factory.setAutoStartup(settings.mode() == ProcessingMode.INBOX && settings.inboxBatchIngest());
         return factory;
     }
 

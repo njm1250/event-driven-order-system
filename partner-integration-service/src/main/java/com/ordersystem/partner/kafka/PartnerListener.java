@@ -16,6 +16,8 @@ import org.springframework.kafka.support.Acknowledgment;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.support.TransactionTemplate;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -69,6 +71,39 @@ public class PartnerListener {
             case RETRY_TOPIC -> deliverOrPark(task);
             case PARALLEL_CONSUMER -> throw new IllegalStateException("Parallel Consumer does not use this listener");
         }
+    }
+
+    /** Inbox v2: one transaction (one commit) per poll instead of one per record. */
+    @KafkaListener(id = "partner-batch", groupId = "${spring.kafka.consumer.group-id}", topics = "${app.topic}",
+            containerFactory = "inboxBatchFactory")
+    public void receiveBatch(List<ConsumerRecord<String, String>> records, Acknowledgment ack) throws Exception {
+        List<PartnerTask> tasks = new ArrayList<>(records.size());
+        List<String> payloads = new ArrayList<>(records.size());
+        for (var record : records) {
+            PartnerOrderEvent event = json.readValue(record.value(), PartnerOrderEvent.class);
+            event.validate();
+            var task = new PartnerTask(event, null, record.topic(), record.partition(), record.offset());
+            receivedOffsets.merge(record.partition(), record.offset() + 1, Math::max);
+            tracer.trace("received", task);
+            tasks.add(task);
+            payloads.add(record.value());
+        }
+        long begin = System.nanoTime();
+        tx.executeWithoutResult(status -> {
+            tracer.trace("db_acquired", tasks.get(0), "waitMs", (System.nanoTime() - begin) / 1e6, "batch", tasks.size());
+            try {
+                inbox.storeAll(tasks, payloads, settings.backlogLimit(), settings.retainedLimit(), System.currentTimeMillis());
+            } catch (InboxRepository.InboxFullException full) {
+                tracer.trace("backpressure", tasks.get(0), "batch", tasks.size());
+                throw full;
+            }
+            BoundaryGate.hit("inbox_before_commit", tasks.get(0).eventId());
+        });
+        for (var task : tasks) tracer.trace("inbox_commit", task);
+        BoundaryGate.hit("inbox_commit", tasks.get(0).eventId());
+        ack.acknowledge();
+        tracer.trace("ack_requested", tasks.get(tasks.size() - 1), "meaning", "inbox handoff", "batch", tasks.size());
+        dispatcher.wake();
     }
 
     /** The offset commit only means "stored"; delivery happens later in WorkerDispatcher. */

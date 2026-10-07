@@ -42,14 +42,23 @@ def stage_plan(stage):
             for rate, mode in shuffled(cells, 1000 + repeat):
                 plan.append(dict(mode=mode, scenario='clean', repeat=repeat, workload='sweep', partitions=4,
                                  rate=rate, duration=SWEEP_DURATION))
+    elif stage == 3:
+        # Inbox v2 (one transaction per poll) on the stage 1 cluster.
+        for repeat in range(1, 4):
+            plan.append(dict(mode='inbox-batch', scenario='api', repeat=repeat, workload='market', partitions=4))
+            plan.append(dict(mode='inbox-batch', scenario='hang', repeat=repeat, workload='market', partitions=4))
+        for repeat in range(1, 4):
+            for rate in shuffled([80, 160, 320, 640], 4000 + repeat):
+                plan.append(dict(mode='inbox-batch', scenario='clean', repeat=repeat, workload='sweep', partitions=4,
+                                 rate=rate, duration=SWEEP_DURATION))
     else:
         # asyncAcks was compared in stage 1; stage 2 checks external validity, not the full benchmark.
         for repeat in range(1, 4):
-            cells = [(rate, mode) for rate in [160, 320, 640] for mode in ['sequential', 'parallel-consumer', 'retry-topic', 'inbox']]
+            cells = [(rate, mode) for rate in [160, 320, 640] for mode in ['sequential', 'parallel-consumer', 'retry-topic', 'inbox', 'inbox-batch']]
             for rate, mode in shuffled(cells, 2000 + repeat):
                 plan.append(dict(mode=mode, scenario='clean', repeat=repeat, workload='sweep', partitions=4,
                                  rate=rate, duration=SWEEP_DURATION))
-            for mode in shuffled(['retry-topic', 'inbox'], 3000 + repeat):
+            for mode in shuffled(['retry-topic', 'inbox', 'inbox-batch'], 3000 + repeat):
                 plan.append(dict(mode=mode, scenario='broker-failover', repeat=repeat, workload='sweep', partitions=4,
                                  rate=160, duration=20))
     return plan
@@ -57,7 +66,7 @@ def stage_plan(stage):
 
 if __name__ == '__main__':
     p = argparse.ArgumentParser()
-    p.add_argument('--stage', type=int, choices=[1, 2], required=True)
+    p.add_argument('--stage', type=int, choices=[1, 2, 3], required=True)
     p.add_argument('--evidence', required=True)
     a = p.parse_args()
     root = Path(a.evidence).resolve()

@@ -112,7 +112,8 @@ public class ExperimentController {
             }
         });
         result.put("producer", producerMetrics);
-        var container = registry.getListenerContainer("partner");
+        var container = registry.getListenerContainer(
+                settings.mode() == ProcessingMode.INBOX && settings.inboxBatchIngest() ? "partner-batch" : "partner");
         result.put("paused", container != null && container.isContainerPaused());
         if (settings.mode() == ProcessingMode.PARALLEL_CONSUMER) result.put("assigned", parallel.assignedPartitions());
         else result.put("assigned", container == null || container.getAssignedPartitions() == null ? 0 : container.getAssignedPartitions().size());

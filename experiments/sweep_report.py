@@ -7,7 +7,7 @@ import statistics
 from pathlib import Path
 from evidence_paths import validate_evidence_path
 
-MODES = ['sequential', 'async', 'parallel-consumer', 'retry-topic', 'inbox']
+MODES = ['sequential', 'async', 'parallel-consumer', 'retry-topic', 'inbox', 'inbox-batch']
 
 p = argparse.ArgumentParser(); p.add_argument('--evidence', required=True); a = p.parse_args()
 root = Path(a.evidence).resolve()

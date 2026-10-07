@@ -65,4 +65,29 @@ class InboxRepositoryTest extends MySqlTestBase {
         assertThat(db.queryForList("SELECT event_id FROM inbox ORDER BY event_id", String.class))
                 .containsExactly("normal-2-1", "normal-3-1");
     }
+
+    @Test
+    void batchStoreSkipsKnownAndRepeatedEventsInOneTransaction() throws Exception {
+        store(task("normal", 1, 1), 200);
+        var tasks = java.util.List.of(task("normal", 1, 1), task("normal", 2, 1), task("normal", 2, 1), task("slow", 3, 1));
+        var payloads = new java.util.ArrayList<String>();
+        for (var t : tasks) payloads.add(json.writeValueAsString(t.event()));
+
+        int inserted = tx.execute(s -> inbox.storeAll(tasks, payloads, 200, 2000, 1));
+
+        assertThat(inserted).isEqualTo(2);
+        assertThat(db.queryForList("SELECT event_id FROM inbox ORDER BY event_id", String.class))
+                .containsExactly("normal-1-1", "normal-2-1", "slow-3-1");
+    }
+
+    @Test
+    void batchStoreRejectsTheWholePollWhenItWouldExceedThePendingLimit() throws Exception {
+        store(task("slow", 1, 1), 200);
+        var tasks = java.util.List.of(task("normal", 2, 1), task("normal", 3, 1));
+        var payloads = java.util.List.of("{}", "{}");
+
+        assertThatThrownBy(() -> tx.execute(s -> inbox.storeAll(tasks, payloads, 2, 2000, 1)))
+                .isInstanceOf(InboxRepository.InboxFullException.class);
+        assertThat(db.queryForObject("SELECT COUNT(*) FROM inbox", Long.class)).isEqualTo(1);
+    }
 }

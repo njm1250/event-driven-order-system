@@ -29,7 +29,7 @@ JAVA_RUNTIME = None
 # A partner API on another host (the AWS run) stays up and starts a fresh ledger per run.
 PARTNER_API = os.environ.get('PARTNER_API_URL', 'http://localhost:8099')
 REMOTE_PARTNER = 'localhost' not in PARTNER_API
-MODES = ['sequential','async','inbox','circuit-breaker','retry-topic','parallel-consumer']
+MODES = ['sequential','async','inbox','inbox-batch','circuit-breaker','retry-topic','parallel-consumer']
 
 def now():
     return int(time.time()*1000)
@@ -368,6 +368,8 @@ def run_case(base, mode, scenario, repeat, observe=True, workload='pair', partit
         http(PARTNER_API+'/reset',dict(name=root.name));mock=None
     else:mock=launch([sys.executable,str(REPO/'experiments/mock-partner-api/server.py'),'--database',str(root/'external.sqlite')],root/'mock.log')
     extra=dict(PARTNER_MODE=mode,PARTNER_TOPIC=topic,PARTNER_GROUP=group,APP_PARTITIONS=partitions,APP_PARTNER_URL=PARTNER_API)
+    # inbox-batch is the inbox mode with one transaction per poll (inbox v2).
+    if mode=='inbox-batch':extra.update(PARTNER_MODE='inbox',APP_INBOX_BATCH_INGEST='true')
     if workload=='market':extra['APP_INPUT_BUDGET']=5000
     if workload=='sweep':
         # Long, fast inputs: keep completed inbox rows only briefly so the retained-row bound is not the limit.
@@ -386,7 +388,7 @@ def run_case(base, mode, scenario, repeat, observe=True, workload='pair', partit
     try:
         wait_for(lambda:http(PARTNER_API+'/health'),label='mock ready')
         service=java('partner-integration-service',root,extra)
-        wait_for(lambda:http(SERVICE_URL+'/observe').get('assigned',0)>=(1 if mode=='inbox' else partitions),label='partner assignment ready')
+        wait_for(lambda:http(SERVICE_URL+'/observe').get('assigned',0)>=(1 if mode in ('inbox','inbox-batch') else partitions),label='partner assignment ready')
         http(SERVICE_URL+'/load',[])
         # Allow assignment and capture 1s of fault-free data before injection.
         if observe:

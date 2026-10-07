@@ -43,6 +43,36 @@ public class InboxRepository {
         return true;
     }
 
+    /**
+     * Stores one poll's records in the caller's transaction, so the batch shares one commit (and one
+     * redo fsync) instead of paying it per record. Already stored events are skipped.
+     *
+     * @return how many rows were inserted
+     */
+    public int storeAll(List<PartnerTask> tasks, List<String> payloads, int pendingLimit, int retainedLimit, long receivedAt) {
+        if (tasks.isEmpty()) return 0;
+        var ids = tasks.stream().map(PartnerTask::eventId).toList();
+        var placeholders = String.join(",", java.util.Collections.nCopies(ids.size(), "?"));
+        var existing = new java.util.HashSet<>(db.queryForList("SELECT event_id FROM inbox WHERE event_id IN (" + placeholders + ")",
+                String.class, ids.toArray()));
+        List<Object[]> rows = new ArrayList<>();
+        for (int i = 0; i < tasks.size(); i++) {
+            var task = tasks.get(i);
+            var e = task.event();
+            if (!existing.add(e.eventId())) continue;   // stored before, or repeated inside this poll
+            rows.add(new Object[]{e.eventId(), e.runId(), e.sellerId(), e.orderId(), e.sequence(), payloads.get(i),
+                    task.topic(), task.partition(), task.offset(), receivedAt});
+        }
+        if (rows.isEmpty()) return 0;
+        if (db.queryForObject("SELECT COUNT(*) FROM inbox WHERE state<>'DONE'", Long.class) + rows.size() > pendingLimit
+                || db.queryForObject("SELECT COUNT(*) FROM inbox", Long.class) + rows.size() > retainedLimit) {
+            throw new InboxFullException();
+        }
+        db.batchUpdate("INSERT INTO inbox(event_id,run_id,seller_id,order_id,seq,payload,topic,partition_id,kafka_offset,received_at) "
+                + "VALUES(?,?,?,?,?,?,?,?,?,?)", rows);
+        return rows.size();
+    }
+
     /** Pending rows whose predecessor is delivered and whose retry delay has passed, oldest first. */
     public List<PartnerTask> findReady(long now, int limit) throws Exception {
         var rows = db.queryForList("SELECT i.* FROM inbox i LEFT JOIN partner_order o "
