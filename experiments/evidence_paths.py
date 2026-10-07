@@ -3,7 +3,7 @@ import subprocess
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
-DEFAULT_EVIDENCE = REPO / 'experiment-evidence' / '2026-10-06'
+DEFAULT_EVIDENCE = REPO / 'experiment-evidence' / 'manual'
 
 def validate_evidence_path(path):
     path = Path(path).expanduser().resolve()
