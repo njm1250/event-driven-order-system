@@ -23,6 +23,9 @@ import org.springframework.kafka.support.SendResult;
 import org.springframework.web.bind.annotation.*;
 
 import java.lang.management.ManagementFactory;
+import jakarta.annotation.PreDestroy;
+
+import java.sql.Connection;
 import java.sql.DriverManager;
 import java.time.Duration;
 import java.util.*;
@@ -49,6 +52,8 @@ public class ExperimentController {
     private final ParallelConsumerRunner parallel;
     private final String group;
     private final String bootstrap;
+    private AdminClient admin;
+    private Connection accounting;
 
     public ExperimentController(PartnerSettings settings, ObjectMapper json, Tracer tracer, HikariDataSource pool,
                                 KafkaTemplate<String, String> producer, KafkaListenerEndpointRegistry registry,
@@ -117,7 +122,8 @@ public class ExperimentController {
                     .map(x -> x.getValue().metricValue()).findFirst();
             result.put("recordsLagMax", lag.orElse(null));
         }
-        try (var admin = admin()) {
+        try {
+            var admin = admin();
             var mainPartitions = partitions(settings.topic(), settings.partitions());
             var committed = admin.listConsumerGroupOffsets(group).partitionsToOffsetAndMetadata().get(2, TimeUnit.SECONDS);
             var ends = endOffsets(admin, mainPartitions);
@@ -154,13 +160,12 @@ public class ExperimentController {
     public synchronized List<Map<String, Object>> load(@RequestBody List<PartnerOrderEvent> events) throws Exception {
         List<Map<String, Object>> result = new ArrayList<>();
         producer.partitionsFor(settings.topic());
-        if (!events.isEmpty()) {
-            try (var admin = admin()) {
-                long produced = endOffsets(admin, partitions(settings.topic(), settings.partitions()))
-                        .values().stream().mapToLong(Long::longValue).sum();
-                if (produced - deliveredCount() + events.size() > settings.inputBudget()) {
-                    throw new IllegalStateException("Global input backlog budget (" + settings.inputBudget() + ") reached");
-                }
+        // inputBudget <= 0 disables the check: throughput sweeps measure the structures, not this guard.
+        if (!events.isEmpty() && settings.inputBudget() > 0) {
+            long produced = endOffsets(admin(), partitions(settings.topic(), settings.partitions()))
+                    .values().stream().mapToLong(Long::longValue).sum();
+            if (produced - deliveredCount() + events.size() > settings.inputBudget()) {
+                throw new IllegalStateException("Global input backlog budget (" + settings.inputBudget() + ") reached");
             }
         }
         if (events.size() > settings.backlogLimit()) throw new IllegalArgumentException("Input batch exceeds capacity");
@@ -202,18 +207,31 @@ public class ExperimentController {
         return Map.of("accepted", true, "durationMs", duration);
     }
 
-    /** Uses its own connection: the input controller must work while the worker pool is faulted. */
-    private long deliveredCount() throws Exception {
-        try (var connection = DriverManager.getConnection(pool.getJdbcUrl(), pool.getUsername(), pool.getPassword());
-             var statement = connection.createStatement();
+    /**
+     * Uses its own connection: the input controller must work while the worker pool is faulted.
+     * Kept open: opening one per call means a TLS handshake each time.
+     */
+    private synchronized long deliveredCount() throws Exception {
+        if (accounting == null || !accounting.isValid(1)) {
+            accounting = DriverManager.getConnection(pool.getJdbcUrl(), pool.getUsername(), pool.getPassword());
+        }
+        try (var statement = accounting.createStatement();
              var rows = statement.executeQuery("SELECT COUNT(*) FROM partner_effect")) {
             rows.next();
             return rows.getLong(1);
         }
     }
 
-    private AdminClient admin() {
-        return AdminClient.create(Map.of(AdminClientConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrap));
+    /** One client for the process; creating one per call is expensive. */
+    private synchronized AdminClient admin() {
+        if (admin == null) admin = AdminClient.create(Map.of(AdminClientConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrap));
+        return admin;
+    }
+
+    @PreDestroy
+    void close() throws Exception {
+        if (admin != null) admin.close();
+        if (accounting != null) accounting.close();
     }
 
     private static List<TopicPartition> partitions(String topic, int count) {

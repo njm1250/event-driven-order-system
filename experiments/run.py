@@ -371,7 +371,7 @@ def run_case(base, mode, scenario, repeat, observe=True, workload='pair', partit
     if workload=='market':extra['APP_INPUT_BUDGET']=5000
     if workload=='sweep':
         # Long, fast inputs: keep completed inbox rows only briefly so the retained-row bound is not the limit.
-        extra.update(APP_INPUT_BUDGET=200000,APP_RETAINED_LIMIT=20000,APP_INBOX_DONE_RETENTION_MS=2000)
+        extra.update(APP_INPUT_BUDGET=0,APP_RETAINED_LIMIT=20000,APP_INBOX_DONE_RETENTION_MS=2000)
     if scenario=='rebalance':extra['SPRING_KAFKA_CONSUMER_PROPERTIES_MAX_POLL_INTERVAL_MS']=2000
     if scenario=='backlog':extra['APP_BACKLOG_LIMIT']=8
     if not observe:extra['APP_TRACE_ENABLED']='false'
