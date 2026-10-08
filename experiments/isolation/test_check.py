@@ -139,6 +139,15 @@ class CheckerNegativeControls(unittest.TestCase):
         self.assertEqual(normal['misses'], 2)
         self.assertEqual(normal['censored'], 1)
 
+    def test_cohort_follows_each_operations_planned_time(self):
+        def plant(d):
+            d['run']['phaseBounds'] = {'baseline': [0, 1500], 'fault': [1500, 100_000]}
+            for e in d['trace']:
+                e['phase'] = 'baseline'  # labelled with the order's arrival phase
+        latency = self.verdicts(plant)['latency']
+        self.assertEqual(latency['baseline']['normal']['n'], 2)  # the two CREATEs planned before 1.5s
+        self.assertEqual(latency['fault']['normal']['n'], 4)
+
 
 if __name__ == '__main__':
     unittest.main(verbosity=1)

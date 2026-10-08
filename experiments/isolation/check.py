@@ -98,6 +98,12 @@ def check(root):
     limits = run['limits']
 
     planned = {e['event']['eventId']: e for e in trace}
+    # Cohorts follow each operation's own planned time. The trace labels an event with the phase
+    # its order arrived in, but CHANGE and CANCEL run 2s and 5s later and can fall in the next phase.
+    bounds = sorted(((b[0], name) for name, b in (run.get('phaseBounds') or {}).items()), reverse=True)
+    if bounds:
+        for e in trace:
+            e['phase'] = next(name for begin, name in bounds if e['plannedOffsetMs'] >= begin)
     accepted = {k: v for k, v in published.items() if v.get('status') == 200 and v.get('createdAt')}
     created = {k: v['createdAt'] for k, v in accepted.items()}
 
