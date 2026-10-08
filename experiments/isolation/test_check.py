@@ -148,6 +148,21 @@ class CheckerNegativeControls(unittest.TestCase):
         self.assertEqual(latency['baseline']['normal']['n'], 2)  # the two CREATEs planned before 1.5s
         self.assertEqual(latency['fault']['normal']['n'], 4)
 
+    def test_refused_order_is_not_a_liveness_failure_but_a_silent_drop_is(self):
+        def refuse(d):
+            for r in d['load'][3:6]:
+                r.update(status=429, createdAt=None)
+            d['mock']['effects'] = d['mock']['effects'][:3] + d['mock']['effects'][6:]
+        result = self.verdicts(refuse)['liveness']
+        self.assertTrue(result['passed'])
+        self.assertEqual(result['refused'], 3)
+
+        def drop(d):
+            for r in d['load'][3:6]:
+                r.update(status=None, createdAt=None)
+            d['mock']['effects'] = d['mock']['effects'][:3] + d['mock']['effects'][6:]
+        self.assertFalse(self.verdicts(drop)['liveness']['passed'])
+
 
 if __name__ == '__main__':
     unittest.main(verbosity=1)

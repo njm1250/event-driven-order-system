@@ -35,6 +35,15 @@ def e1_spec(candidate, seed, rate, backlog=200, label='e1'):
                 fault='fault', judgedPhases=['fault', 'recovery'], drainSeconds=60)
 
 
+def r1_spec(candidate, seed, rate, fault_seconds):
+    """Per-seller quota at the source (design v2.2), partner limit as in E2 so intake never stops for one seller."""
+    label = 'r1' if fault_seconds == 180 else 'r1long'
+    spec = e1_spec(candidate, seed, rate, backlog=2000, label=label)
+    spec['phases'] = [('warmup', 90, rate), ('baseline', 90, rate), ('fault', fault_seconds, rate), ('recovery', 90, rate)]
+    spec['sellerQuota'] = 200
+    return spec
+
+
 def e3_spec(candidate, seed, rate, condition):
     spec = dict(label=f'e3-{condition}-{candidate}-s{seed}', stage='e3', candidate=candidate, seed=seed,
                 phases=[('warmup', 90, rate), ('scenario', 150, rate)], scenarioPhase='scenario', drainSeconds=90,
@@ -257,9 +266,10 @@ class Suite:
                 for candidate in random.Random(seed).sample(ALL, len(ALL)):
                     _, result = self.run(e1_spec(candidate, seed, rate), MINUTES['e1'])
                     results[candidate].append(result)
-        best, final = self.pick(results) if 'e1' in stages else ('kafka-bucket', 'kafka-bucket')
-        self.note(event='selection', kafkaForE3=best, final=final,
-                  medians={c: [self.judged_miss(r) for r in rs if r] for c, rs in results.items()})
+        best, final = self.pick(results) if 'e1' in stages else ('kafka-retry', 'kafka-retry')
+        if 'e1' in stages:
+            self.note(event='selection', kafkaForE3=best, final=final,
+                      medians={c: [self.judged_miss(r) for r in rs if r] for c, rs in results.items()})
         if 'e2' in stages:
             for seed in SEEDS:
                 self.run(e1_spec('db-inbox', seed, rate, backlog=2000, label='e2'), MINUTES['e2'])
@@ -271,6 +281,14 @@ class Suite:
         if 'e4' in stages:
             for seed in SEEDS:
                 self.run(e4_spec(final, seed, rate), MINUTES['e4'])
+        if 'r1' in stages:
+            for seed in SEEDS:
+                for candidate in random.Random(seed + 50).sample(ALL, len(ALL)):
+                    self.run(r1_spec(candidate, seed, rate, 180), MINUTES['e1'])
+        if 'r1long' in stages:
+            for seed in SEEDS:
+                for candidate in random.Random(seed + 60).sample(['db-inbox', 'kafka-retry'], 2):
+                    self.run(r1_spec(candidate, seed, rate, 600), 16)
         if 'e1' in stages and self.remaining_minutes() >= 2 * 2 * MINUTES['e1'] + 4:
             for seed in EXTRA_SEEDS:
                 for candidate in random.Random(seed).sample(['db-inbox', best], 2):

@@ -56,7 +56,7 @@ public class CompletionListener {
     public void receive(List<ConsumerRecord<String, String>> records, Acknowledgment ack) throws Exception {
         List<PartnerCompletionEvent> events = new java.util.ArrayList<>(records.size());
         for (var record : records) events.add(json.readValue(record.value(), PartnerCompletionEvent.class));
-        tx.executeWithoutResult(status -> events.forEach(e -> obligations.resolve(e.eventId(), e.completedAt())));
+        tx.executeWithoutResult(status -> events.forEach(e -> obligations.resolve(e.eventId(), e.sellerId(), e.completedAt())));
         ack.acknowledge();
     }
 }

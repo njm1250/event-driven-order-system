@@ -67,7 +67,8 @@ class Sender(threading.Thread):
                         status, data = self.post('/orders', body, {'Content-Type': 'application/json',
                                                                    'Idempotency-Key': event['eventId'], 'X-Instance': 'load'})
                     record['status'] = status
-                    if status == 200:
+                    # 4xx is the target's decision (a refused order), not a lost response: never resend.
+                    if status == 200 or 400 <= status < 500:
                         break
                 except Exception as error:
                     record['status'] = None

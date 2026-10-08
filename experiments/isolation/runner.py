@@ -92,7 +92,7 @@ class Run:
         self.stop_all()
         topo.mysql(topo.PARTNER_DB, 'partner_db', 'TRUNCATE inbox; TRUNCATE partner_effect; TRUNCATE partner_order; '
                    'TRUNCATE seller_permit; TRUNCATE retry_admission; TRUNCATE completion_outbox')
-        topo.mysql(topo.SOURCE_DB, 'order_db', 'TRUNCATE delivery_obligation; TRUNCATE outbox_event')
+        topo.mysql(topo.SOURCE_DB, 'order_db', 'TRUNCATE delivery_obligation; TRUNCATE outbox_event; TRUNCATE seller_quota')
         for topic, partitions in [(self.topic, 4), (self.topic + '-retry', 4), (self.completion_topic, 4)]:
             topo.kafka_topics(['--create', '--if-not-exists', '--topic', topic, '--partitions', str(partitions),
                                '--replication-factor', str(topo.REPLICATION_FACTOR),
@@ -108,6 +108,7 @@ class Run:
         args = [f'--server.port={host.port}', f'--spring.datasource.url={db}', f'--spring.kafka.bootstrap-servers={topo.KAFKA_BOOTSTRAP}',
                 '--app.delivery-tracking=true', f'--app.partner-topic={self.topic}', f'--app.completion-topic={self.completion_topic}',
                 f'--app.completion-group=s-{self.tag}', '--app.outbox-poll-ms=10', '--app.outbox-retention-ms=60000',
+                f'--app.seller-quota={self.spec.get("sellerQuota", 0)}',
                 '--spring.kafka.producer.properties[enable.idempotence]=true', '--spring.kafka.producer.acks=all',
                 '--spring.kafka.consumer.auto-offset-reset=earliest', '--logging.level.org.apache.kafka=WARN']
         self._launch(host, SOURCE_JAR, args, f'source-{self.root.name}.log', {})

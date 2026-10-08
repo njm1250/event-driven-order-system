@@ -151,12 +151,19 @@ def check(root):
     held_permits = partner_db.get('heldPermits', [])
     pending_delivered = [r for r in partner_db.get('openInbox', []) if r['event_id'] in effects_by_event]
     not_accepted = [k for k in planned if k not in accepted]
-    liveness = dict(passed=not (undelivered or held_permits or pending_delivered),
+    refused = [k for k in not_accepted if (published.get(k) or {}).get('status') == 429]
+    refused_by_seller = dict(collections.Counter(planned[k]['event']['sellerId'] for k in refused))
+    creates_by_seller = collections.Counter(e['event']['sellerId'] for e in trace if e['event']['sequence'] == 1)
+    refused_creates = collections.Counter(planned[k]['event']['sellerId'] for k in refused if planned[k]['event']['sequence'] == 1)
+    liveness = dict(passed=not (undelivered or held_permits or pending_delivered or len(not_accepted) > len(refused)),
                     planned=len(planned), accepted=len(accepted), notAccepted=len(not_accepted),
                     undelivered=len(undelivered), unresolvedObligations=len(unresolved),
                     openInboxRows=len(partner_db.get('openInbox', [])), heldPermits=len(held_permits),
                     pendingAfterDelivery=len(pending_delivered),
                     undeliveredBySeller=dict(collections.Counter(planned[k]['event']['sellerId'] for k in undelivered)),
+                    refused=len(refused), refusedBySeller=refused_by_seller,
+                    orderAcceptanceBySeller={s: round(1 - refused_creates.get(s, 0) / n, 4) for s, n in creates_by_seller.items()},
+                    unexplainedNotAccepted=len(not_accepted) - len(refused),
                     examples=undelivered[:5])
 
     # ---- budget, on the seller API's request log

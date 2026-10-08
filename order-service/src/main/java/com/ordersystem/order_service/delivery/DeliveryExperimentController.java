@@ -26,20 +26,28 @@ public class DeliveryExperimentController {
     private final DeliveryBacklogMonitor monitor;
     private final TransactionTemplate tx;
     private final String topic;
+    private final int sellerQuota;
 
     public DeliveryExperimentController(DeliveryObligations obligations, DeliveryBacklogMonitor monitor,
-                                        TransactionTemplate tx, @Value("${app.partner-topic}") String topic) {
+                                        TransactionTemplate tx, @Value("${app.partner-topic}") String topic,
+                                        @Value("${app.seller-quota:0}") int sellerQuota) {
         this.obligations = obligations;
         this.monitor = monitor;
         this.tx = tx;
         this.topic = topic;
+        this.sellerQuota = sellerQuota;
     }
 
+    /** 200 with createdAt when accepted; 429 when the seller is over its quota (a decision, not a fault). */
     @PostMapping("/obligations")
-    public Map<String, Object> accept(@RequestBody Submission submission) {
+    public org.springframework.http.ResponseEntity<Map<String, Object>> accept(@RequestBody Submission submission) {
         submission.event().validate();
-        Long createdAt = tx.execute(status -> obligations.accept(submission.event(), submission.routingKey(), topic));
-        return Map.of("eventId", submission.event().eventId(), "createdAt", createdAt);
+        var acceptance = tx.execute(status -> obligations.accept(submission.event(), submission.routingKey(), topic, sellerQuota));
+        if (acceptance.createdAt() == null) {
+            return org.springframework.http.ResponseEntity.status(429)
+                    .body(Map.of("eventId", submission.event().eventId(), "rejected", acceptance.reason()));
+        }
+        return org.springframework.http.ResponseEntity.ok(Map.of("eventId", submission.event().eventId(), "createdAt", acceptance.createdAt()));
     }
 
     @GetMapping("/observe")

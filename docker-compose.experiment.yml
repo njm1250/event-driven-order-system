@@ -29,7 +29,7 @@ services:
     environment:
       MYSQL_ROOT_PASSWORD: labpassword
     tmpfs: /var/lib/mysql
-    volumes: ["./experiments/mysql-init.sql:/docker-entrypoint-initdb.d/init.sql:ro", "./experiments/migrations/001-source-schema.sql:/docker-entrypoint-initdb.d/z001-source-schema.sql:ro", "./experiments/migrations/002-delivery-obligation.sql:/docker-entrypoint-initdb.d/z001b-delivery-obligation.sql:ro", "./partner-integration-service/src/main/resources/schema.sql:/docker-entrypoint-initdb.d/z002-partner-schema.sql:ro"]
+    volumes: ["./experiments/mysql-init.sql:/docker-entrypoint-initdb.d/init.sql:ro", "./experiments/migrations/001-source-schema.sql:/docker-entrypoint-initdb.d/z001-source-schema.sql:ro", "./experiments/migrations/002-delivery-obligation.sql:/docker-entrypoint-initdb.d/z001b-delivery-obligation.sql:ro", "./experiments/migrations/003-seller-quota.sql:/docker-entrypoint-initdb.d/z001c-seller-quota.sql:ro", "./partner-integration-service/src/main/resources/schema.sql:/docker-entrypoint-initdb.d/z002-partner-schema.sql:ro"]
     healthcheck:
       test: ["CMD-SHELL", "mysqladmin ping -h localhost -uroot -plabpassword >/dev/null 2>&1"]
       interval: 3s
