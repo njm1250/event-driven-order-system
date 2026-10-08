@@ -88,7 +88,9 @@ public class WorkerDispatcher {
         boolean success = false;
         try {
             int attempt = task.nextAttempt();
-            if (inboxMode) inbox.saveAttempts(task.eventId(), attempt);
+            // Saving the attempt before the call keeps it even if the JVM dies mid-call, at the cost of a
+            // separate commit per event. Without it the attempt is written with the outcome.
+            if (inboxMode && settings.inboxAttemptsBeforeCall()) inbox.saveAttempts(task.eventId(), attempt);
             processor.process(task);
             // Inbox only: a Kafka redelivery of the same event is absorbed by the inbox key, but in the
             // async mode it is a new record that still has to run once to be acknowledged.
@@ -104,7 +106,7 @@ public class WorkerDispatcher {
             tracer.trace("retry_scheduled", task, "nextAt", task.nextAt(), "error", e.toString());
             if (inboxMode) {
                 try {
-                    inbox.scheduleRetry(task.eventId(), task.nextAt());
+                    inbox.scheduleRetry(task.eventId(), task.nextAt(), task.attempts());
                 } catch (Exception error) {
                     tracer.trace("retry_save_error", task, "error", error.toString());
                 }

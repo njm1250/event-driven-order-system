@@ -47,7 +47,7 @@ class InboxRepositoryTest extends MySqlTestBase {
     void scheduledRetryIsHiddenUntilItsTime() throws Exception {
         store(task("slow", 1, 1), 200);
         long now = System.currentTimeMillis();
-        inbox.scheduleRetry("slow-1-1", now + 300);
+        inbox.scheduleRetry("slow-1-1", now + 300, 1);
 
         assertThat(inbox.findReady(now, 10)).isEmpty();
         assertThat(inbox.findReady(now + 300, 10)).hasSize(1);
@@ -58,8 +58,8 @@ class InboxRepositoryTest extends MySqlTestBase {
         store(task("normal", 1, 1), 200);
         store(task("normal", 2, 1), 200);
         store(task("normal", 3, 1), 200);
-        inbox.markDone("normal-1-1", 1_000);
-        inbox.markDone("normal-2-1", 5_000);
+        inbox.markDone("normal-1-1", 1_000, 1);
+        inbox.markDone("normal-2-1", 5_000, 1);
 
         assertThat(inbox.deleteDoneBefore(2_000, 100)).isEqualTo(1);
         assertThat(db.queryForList("SELECT event_id FROM inbox ORDER BY event_id", String.class))
@@ -89,5 +89,15 @@ class InboxRepositoryTest extends MySqlTestBase {
         assertThatThrownBy(() -> tx.execute(s -> inbox.storeAll(tasks, payloads, 2, 2000, 1)))
                 .isInstanceOf(InboxRepository.InboxFullException.class);
         assertThat(db.queryForObject("SELECT COUNT(*) FROM inbox", Long.class)).isEqualTo(1);
+    }
+
+    @Test
+    void outcomeWritesKeepTheHighestAttemptCount() throws Exception {
+        store(task("slow", 1, 1), 200);
+        inbox.scheduleRetry("slow-1-1", 10, 2);
+        inbox.markDone("slow-1-1", 20, 1);
+
+        assertThat(db.queryForObject("SELECT attempts FROM inbox WHERE event_id='slow-1-1'", Integer.class)).isEqualTo(2);
+        assertThat(db.queryForObject("SELECT state FROM inbox WHERE event_id='slow-1-1'", String.class)).isEqualTo("DONE");
     }
 }

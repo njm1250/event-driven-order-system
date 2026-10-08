@@ -8,7 +8,7 @@ import urllib.error
 import uuid
 from pathlib import Path
 from evidence_paths import validate_evidence_path, DEFAULT_EVIDENCE
-from run import REPO, COMPOSE, command, sql, http, wait_for, java, launch, stop, new_root, metadata, save, snapshot, report, now, PROCESSES, HANDLES
+from run import INBOX_VARIANTS, REPO, COMPOSE, command, sql, http, wait_for, java, launch, stop, new_root, metadata, save, snapshot, report, now, PROCESSES, HANDLES
 from checker import check
 
 LEGACY_TOPICS=['inventory-order-created','order-stock-update','order-stock-update-failed','partner-order-requests',
@@ -35,8 +35,8 @@ def run(base, mode, boundary='none', concurrent_duplicate=False, poll_ms=100, se
     try:
         procs.append(launch([sys.executable,str(REPO/'experiments/mock-partner-api/server.py'),'--database',str(root/'external.sqlite')],root/'mock.log'))
         wait_for(lambda:http('http://localhost:8099/health'))
-        partner=dict(PARTNER_MODE=mode,PARTNER_TOPIC='partner-order-requests',PARTNER_GROUP='e2e-'+uuid.uuid4().hex,APP_INBOX_BATCH_INGEST='false')
-        if mode=='inbox-batch':partner.update(PARTNER_MODE='inbox',APP_INBOX_BATCH_INGEST='true')
+        partner=dict(PARTNER_MODE=mode,PARTNER_TOPIC='partner-order-requests',PARTNER_GROUP='e2e-'+uuid.uuid4().hex)
+        if mode in INBOX_VARIANTS:partner.update(PARTNER_MODE='inbox',**INBOX_VARIANTS[mode])
         procs.append(java('partner-integration-service',root,partner))
         wait_for(lambda:http('http://localhost:8090/observe'))
         if (REPO/'experiments/migrations/001-source-schema.sql').exists():
@@ -163,7 +163,7 @@ def run(base, mode, boundary='none', concurrent_duplicate=False, poll_ms=100, se
         for p in reversed(procs):stop(p)
 
 if __name__=='__main__':
-    p=argparse.ArgumentParser();p.add_argument('--evidence',default=str(DEFAULT_EVIDENCE));p.add_argument('--mode',default='inbox',choices=['sequential','async','inbox','inbox-batch','circuit-breaker','retry-topic','parallel-consumer']);p.add_argument('--boundary',default='none',choices=['none','broker_ack','inventory_broker_ack']);p.add_argument('--poll-ms',type=int,default=100);p.add_argument('--seller-fault',action='store_true');p.add_argument('--concurrent-duplicate',action='store_true');args=p.parse_args()
+    p=argparse.ArgumentParser();p.add_argument('--evidence',default=str(DEFAULT_EVIDENCE));p.add_argument('--mode',default='inbox',choices=['sequential','async','inbox','inbox-batch','inbox-lean','circuit-breaker','retry-topic','parallel-consumer']);p.add_argument('--boundary',default='none',choices=['none','broker_ack','inventory_broker_ack']);p.add_argument('--poll-ms',type=int,default=100);p.add_argument('--seller-fault',action='store_true');p.add_argument('--concurrent-duplicate',action='store_true');args=p.parse_args()
     path=Path(args.evidence).resolve()
     validate_evidence_path(path)
     path.mkdir(parents=True,exist_ok=True)

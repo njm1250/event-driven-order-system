@@ -59,7 +59,7 @@ public class PartnerOrderProcessor {
             }
             long now = System.currentTimeMillis();
             orders.recordDelivery(event, now);
-            if (settings.mode() == ProcessingMode.INBOX) inbox.markDone(event.eventId(), now);
+            if (settings.mode() == ProcessingMode.INBOX) inbox.markDone(event.eventId(), now, task.attempts());
             BoundaryGate.hit("business_before_commit", event.eventId());
         });
         tracer.trace("business_commit", task);

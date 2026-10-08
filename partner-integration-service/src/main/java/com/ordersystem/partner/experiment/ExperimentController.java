@@ -7,6 +7,7 @@ import com.ordersystem.partner.config.PartnerSettings;
 import com.ordersystem.partner.config.ProcessingMode;
 import com.ordersystem.partner.dispatch.AdmissionPolicy;
 import com.ordersystem.partner.dispatch.AsyncPendingQueue;
+import com.ordersystem.partner.inbox.InboxBacklogMetrics;
 import com.ordersystem.partner.kafka.ParallelConsumerRunner;
 import com.ordersystem.partner.kafka.PartnerListener;
 import com.ordersystem.partner.kafka.RetryLane;
@@ -50,6 +51,7 @@ public class ExperimentController {
     private final RetryLane retryLane;
     private final SellerCircuitBreakers breakers;
     private final ParallelConsumerRunner parallel;
+    private final InboxBacklogMetrics backlog;
     private final String group;
     private final String bootstrap;
     private AdminClient admin;
@@ -59,6 +61,7 @@ public class ExperimentController {
                                 KafkaTemplate<String, String> producer, KafkaListenerEndpointRegistry registry,
                                 PartnerListener listener, AsyncPendingQueue pending, AdmissionPolicy admission,
                                 RetryLane retryLane, SellerCircuitBreakers breakers, ParallelConsumerRunner parallel,
+                                InboxBacklogMetrics backlog,
                                 @Value("${spring.kafka.consumer.group-id}") String group,
                                 @Value("${spring.kafka.bootstrap-servers}") String bootstrap) {
         this.settings = settings;
@@ -73,6 +76,7 @@ public class ExperimentController {
         this.retryLane = retryLane;
         this.breakers = breakers;
         this.parallel = parallel;
+        this.backlog = backlog;
         this.group = group;
         this.bootstrap = bootstrap;
     }
@@ -90,6 +94,9 @@ public class ExperimentController {
         result.put("memoryPending", pending.size());
         result.put("parkedOrders", retryLane.parkedOrders());
         result.put("circuits", breakers.states());
+        Map<String, Object> oldest = new LinkedHashMap<>();
+        backlog.latest().forEach((seller, b) -> oldest.put(seller, b.oldestAgeMs()));
+        result.put("inboxOldestPendingMsBySeller", oldest);
         var mx = pool.getHikariPoolMXBean();
         result.put("dbActive", mx.getActiveConnections());
         result.put("dbWaiting", mx.getThreadsAwaitingConnection());

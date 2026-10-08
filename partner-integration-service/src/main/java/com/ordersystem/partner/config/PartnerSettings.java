@@ -27,6 +27,7 @@ public record PartnerSettings(
         @DefaultValue("1") short replicationFactor,
         @DefaultValue("60000") long inboxDoneRetentionMs,
         @DefaultValue("true") boolean inboxBatchIngest,
+        @DefaultValue("true") boolean inboxAttemptsBeforeCall,
         @DefaultValue Breaker breaker) {
 
     public String retryTopic() {

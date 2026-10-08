@@ -94,12 +94,13 @@ public class InboxRepository {
         db.update("UPDATE inbox SET attempts=? WHERE event_id=?", attempts, eventId);
     }
 
-    public void scheduleRetry(String eventId, long nextAt) {
-        db.update("UPDATE inbox SET next_at=? WHERE event_id=?", nextAt, eventId);
+    /** Records the failed attempt together with the next retry time in one statement. */
+    public void scheduleRetry(String eventId, long nextAt, int attempts) {
+        db.update("UPDATE inbox SET next_at=?,attempts=GREATEST(attempts,?) WHERE event_id=?", nextAt, attempts, eventId);
     }
 
-    public void markDone(String eventId, long doneAt) {
-        db.update("UPDATE inbox SET state='DONE',done_at=? WHERE event_id=?", doneAt, eventId);
+    public void markDone(String eventId, long doneAt, int attempts) {
+        db.update("UPDATE inbox SET state='DONE',done_at=?,attempts=GREATEST(attempts,?) WHERE event_id=?", doneAt, attempts, eventId);
     }
 
     /** Completed rows are only history; the delivery ledger stays the duplicate guard after deletion. */

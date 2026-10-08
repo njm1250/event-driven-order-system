@@ -29,7 +29,12 @@ JAVA_RUNTIME = None
 # A partner API on another host (the AWS run) stays up and starts a fresh ledger per run.
 PARTNER_API = os.environ.get('PARTNER_API_URL', 'http://localhost:8099')
 REMOTE_PARTNER = 'localhost' not in PARTNER_API
-MODES = ['sequential','async','inbox','inbox-batch','circuit-breaker','retry-topic','parallel-consumer']
+MODES = ['sequential','async','inbox','inbox-batch','inbox-lean','circuit-breaker','retry-topic','parallel-consumer']
+# inbox: v1, one transaction per record. inbox-batch: v2, one per poll. inbox-lean: v2 without the
+# separate attempt commit before the partner call.
+INBOX_VARIANTS={'inbox':dict(APP_INBOX_BATCH_INGEST='false',APP_INBOX_ATTEMPTS_BEFORE_CALL='true'),
+                'inbox-batch':dict(APP_INBOX_BATCH_INGEST='true',APP_INBOX_ATTEMPTS_BEFORE_CALL='true'),
+                'inbox-lean':dict(APP_INBOX_BATCH_INGEST='true',APP_INBOX_ATTEMPTS_BEFORE_CALL='false')}
 
 def now():
     return int(time.time()*1000)
@@ -98,7 +103,7 @@ def stop(process, kill=False):
         try: process.wait(timeout=8)
         except subprocess.TimeoutExpired: process.kill(); process.wait()
 
-def java(module, root, extra=None, jar=None):
+def java(module, root, extra=None, jar=None, log_name=None):
     env=os.environ.copy()
     env.update(SPRING_KAFKA_BOOTSTRAP_SERVERS='localhost:39092',SPRING_DATASOURCE_USERNAME='root',
                SPRING_DATASOURCE_PASSWORD='labpassword',APP_KAFKA_PARTITIONS='1',CODE_VERSION=command(['git','rev-parse','HEAD']).strip(),
@@ -110,7 +115,7 @@ def java(module, root, extra=None, jar=None):
     jvm=['java','-Xms64m','-Xmx192m','-XX:ActiveProcessorCount=4','-jar']
     if module=='partner-integration-service' and topology.PARTNER_HOST:
         return remote_java(root,module,extra,jvm)
-    return launch(jvm+[str(target)],root/(module+'.log'),env)
+    return launch(jvm+[str(target)],root/(log_name or module+'.log'),env)
 
 class RemoteJvm:
     """Partner JVM on its own host. It logs to a file there so log transport does not run on the
@@ -370,9 +375,7 @@ def run_case(base, mode, scenario, repeat, observe=True, workload='pair', partit
     else:mock=launch([sys.executable,str(REPO/'experiments/mock-partner-api/server.py'),'--database',str(root/'external.sqlite')],root/'mock.log')
     extra=dict(PARTNER_MODE=mode,PARTNER_TOPIC=topic,PARTNER_GROUP=group,APP_PARTITIONS=partitions,APP_PARTNER_URL=PARTNER_API)
     # inbox-batch is the inbox mode with one transaction per poll (inbox v2).
-    # inbox is v1 (one transaction per record); inbox-batch is v2 (one per poll). Set both explicitly.
-    if mode=='inbox':extra['APP_INBOX_BATCH_INGEST']='false'
-    if mode=='inbox-batch':extra.update(PARTNER_MODE='inbox',APP_INBOX_BATCH_INGEST='true')
+    if mode in INBOX_VARIANTS:extra.update(PARTNER_MODE='inbox',**INBOX_VARIANTS[mode])
     if workload=='market':extra['APP_INPUT_BUDGET']=5000
     if workload=='sweep':
         # Long, fast inputs: keep completed inbox rows only briefly so the retained-row bound is not the limit.
@@ -391,7 +394,7 @@ def run_case(base, mode, scenario, repeat, observe=True, workload='pair', partit
     try:
         wait_for(lambda:http(PARTNER_API+'/health'),label='mock ready')
         service=java('partner-integration-service',root,extra)
-        wait_for(lambda:http(SERVICE_URL+'/observe').get('assigned',0)>=(1 if mode in ('inbox','inbox-batch') else partitions),label='partner assignment ready')
+        wait_for(lambda:http(SERVICE_URL+'/observe').get('assigned',0)>=(1 if mode in INBOX_VARIANTS else partitions),label='partner assignment ready')
         http(SERVICE_URL+'/load',[])
         # Allow assignment and capture 1s of fault-free data before injection.
         if observe:
@@ -413,7 +416,7 @@ def run_case(base, mode, scenario, repeat, observe=True, workload='pair', partit
                 topology.ssh(topology.KAFKA_HOSTS[1],'docker kill kafka')
                 time.sleep(10);topology.ssh(topology.KAFKA_HOSTS[1],'docker start kafka');record('broker_restarted')
             thread=threading.Thread(target=fail_broker);thread.start();threads.append(thread)
-        if scenario in {'api','backlog','broker-kill','hotkey','park-kill','hang'}:
+        if scenario in {'api','backlog','broker-kill','hotkey','park-kill','hang','graceful-restart','scale-out'}:
             # hang: the API answers just inside the 5s client timeout, as a stuck dependency does.
             delay=3000 if scenario=='hang' else 600
             http(PARTNER_API+'/control',dict(sellerId='slow',delayMs=delay,failureCount=1000 if scenario=='hotkey' else 0))
@@ -435,20 +438,48 @@ def run_case(base, mode, scenario, repeat, observe=True, workload='pair', partit
             (root/'hooks'/f'{gate}.arm').touch()
             record('gate_armed',gate=gate)
         placements=[]
+        ops=scenario in {'graceful-restart','scale-out'}
+        if ops:
+            # Partner instances restart or join here, so input must not go through them: an independent
+            # producer keeps publishing, as an upstream order service would.
+            producer=subprocess.Popen(COMPOSE+['exec','-T','kafka','/opt/kafka/bin/kafka-console-producer.sh','--bootstrap-server','kafka:9092',
+                '--topic',topic,'--property','parse.key=true','--property','key.separator=|','--producer-property','acks=all',
+                '--producer-property','linger.ms=0'],stdin=subprocess.PIPE,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,text=True)
+            def ops_event():
+                nonlocal service
+                time.sleep(3)
+                if scenario=='graceful-restart':
+                    began=now();record('sigterm_sent')
+                    service.terminate()
+                    try:service.wait(timeout=30);graceful=True
+                    except subprocess.TimeoutExpired:service.kill();service.wait();graceful=False
+                    record('partner_stopped',graceful=graceful,shutdownMs=now()-began,exitCode=service.returncode)
+                    service=java('partner-integration-service',root,extra)
+                    record('partner_restarted')
+                else:
+                    second.append(java('partner-integration-service',root,dict(extra,SERVER_PORT=8091),log_name='partner-integration-service-2.log'))
+                    record('second_instance_started')
+            second=[]
+            thread=threading.Thread(target=ops_event);thread.start();threads.append(thread)
         # All modes get identical event count, interleaving and arrival cadence (one batch per 100ms).
         tick=time.monotonic();last_saved=0
         for i in range(0,len(expected),per_tick):
             for event in expected[i:i+per_tick]:event['occurredAt']=now()
             if workload!='sweep' or time.monotonic()-last_saved>=1:
                 save(root/'expected.json',expected[:i+per_tick]);last_saved=time.monotonic()
-            placements.extend(http(SERVICE_URL+'/load',expected[i:i+per_tick],timeout=90))
+            if ops:
+                producer.stdin.write(''.join(f"{e['sellerId']}:{e['orderId']}|{json.dumps(e)}\n" for e in expected[i:i+per_tick]));producer.stdin.flush()
+            else:placements.extend(http(SERVICE_URL+'/load',expected[i:i+per_tick],timeout=90))
             tick+=0.1
             time.sleep(max(0,tick-time.monotonic()))
         save(root/'expected.json',expected)
         save(root/'placements.json',placements)
         record('workload_input_done',events=len(expected))
-        if partitions==1 and {x['partition'] for x in placements}!={0}:raise AssertionError('Sellers did not share partition 0')
-        if partitions>1:
+        if ops:
+            producer.stdin.close();producer.wait(timeout=60)
+            for thread in threads:thread.join()
+        elif partitions==1 and {x['partition'] for x in placements}!={0}:raise AssertionError('Sellers did not share partition 0')
+        if partitions>1 and not ops:
             # The order key spreads the slow seller over every partition; record that, do not assume it.
             slow_parts={x['partition'] for x in placements if x['sellerId']=='slow'}
             if slow_parts!=set(range(partitions)):raise AssertionError(f'Slow seller not in every partition: {slow_parts}')
@@ -502,6 +533,7 @@ def run_case(base, mode, scenario, repeat, observe=True, workload='pair', partit
     finally:
         for thread in threads:thread.join(timeout=8)
         if collector and collector.poll() is None:(root/'collector.stop').touch();stop(collector)
+        for extra_service in locals().get('second') or []:stop(extra_service)
         stop(service);stop(mock)
 
 NEW_MODES=['circuit-breaker','retry-topic','parallel-consumer']
@@ -531,7 +563,7 @@ if __name__ == '__main__':
     p.add_argument('--rate',type=int,default=80,help='sweep: events per second')
     p.add_argument('--duration',type=int,default=12,help='sweep: seconds of input')
     p.add_argument('--partitions',type=int,default=1)
-    p.add_argument('--scenario',default='api',choices=['clean','api','db','ack-kill','ack-release','inbox-kill','worker-kill','external-kill','response-loss','redelivery','retry','backlog','business-before-kill','inbox-before-kill','rebalance','broker-kill','hotkey','park-kill','hang','broker-failover'])
+    p.add_argument('--scenario',default='api',choices=['clean','api','db','ack-kill','ack-release','inbox-kill','worker-kill','external-kill','response-loss','redelivery','retry','backlog','business-before-kill','inbox-before-kill','rebalance','broker-kill','hotkey','park-kill','hang','broker-failover','graceful-restart','scale-out'])
     p.add_argument('--repeat',type=int,default=1)
     p.add_argument('--suite',action='store_true')
     p.add_argument('--no-observe',action='store_true')
