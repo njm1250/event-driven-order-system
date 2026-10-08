@@ -30,6 +30,7 @@ public class InboxJanitor {
         try {
             int deleted = inbox.deleteDoneBefore(System.currentTimeMillis() - settings.inboxDoneRetentionMs(), BATCH);
             if (deleted > 0) tracer.trace("inbox_purged", null, "rows", deleted);
+            inbox.deleteRetryAdmissionsBefore(settings.retryWindowMs(), BATCH);
         } catch (Exception e) {
             tracer.trace("inbox_purge_error", null, "error", e.toString());
         }

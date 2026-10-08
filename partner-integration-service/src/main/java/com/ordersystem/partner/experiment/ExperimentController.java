@@ -8,6 +8,7 @@ import com.ordersystem.partner.config.ProcessingMode;
 import com.ordersystem.partner.dispatch.AdmissionPolicy;
 import com.ordersystem.partner.dispatch.AsyncPendingQueue;
 import com.ordersystem.partner.inbox.InboxBacklogMetrics;
+import com.ordersystem.partner.inbox.LeaseKeeper;
 import com.ordersystem.partner.kafka.ParallelConsumerRunner;
 import com.ordersystem.partner.kafka.PartnerListener;
 import com.ordersystem.partner.kafka.RetryLane;
@@ -52,6 +53,7 @@ public class ExperimentController {
     private final SellerCircuitBreakers breakers;
     private final ParallelConsumerRunner parallel;
     private final InboxBacklogMetrics backlog;
+    private final LeaseKeeper leases;
     private final String group;
     private final String bootstrap;
     private AdminClient admin;
@@ -61,7 +63,7 @@ public class ExperimentController {
                                 KafkaTemplate<String, String> producer, KafkaListenerEndpointRegistry registry,
                                 PartnerListener listener, AsyncPendingQueue pending, AdmissionPolicy admission,
                                 RetryLane retryLane, SellerCircuitBreakers breakers, ParallelConsumerRunner parallel,
-                                InboxBacklogMetrics backlog,
+                                InboxBacklogMetrics backlog, LeaseKeeper leases,
                                 @Value("${spring.kafka.consumer.group-id}") String group,
                                 @Value("${spring.kafka.bootstrap-servers}") String bootstrap) {
         this.settings = settings;
@@ -77,6 +79,7 @@ public class ExperimentController {
         this.breakers = breakers;
         this.parallel = parallel;
         this.backlog = backlog;
+        this.leases = leases;
         this.group = group;
         this.bootstrap = bootstrap;
     }
@@ -97,6 +100,11 @@ public class ExperimentController {
         Map<String, Object> oldest = new LinkedHashMap<>();
         backlog.latest().forEach((seller, b) -> oldest.put(seller, b.oldestAgeMs()));
         result.put("inboxOldestPendingMsBySeller", oldest);
+        Map<String, Object> pendingBySeller = new LinkedHashMap<>();
+        backlog.latest().forEach((seller, b) -> pendingBySeller.put(seller, b.pending()));
+        result.put("inboxPendingBySeller", pendingBySeller);
+        result.put("runningClaims", leases.running());
+        if (settings.mode().usesParallelConsumer()) result.put("pcWorkRemaining", parallel.workRemaining());
         var mx = pool.getHikariPoolMXBean();
         result.put("dbActive", mx.getActiveConnections());
         result.put("dbWaiting", mx.getThreadsAwaitingConnection());
@@ -122,7 +130,7 @@ public class ExperimentController {
         var container = registry.getListenerContainer(
                 settings.mode() == ProcessingMode.INBOX && settings.inboxBatchIngest() ? "partner-batch" : "partner");
         result.put("paused", container != null && container.isContainerPaused());
-        if (settings.mode() == ProcessingMode.PARALLEL_CONSUMER) result.put("assigned", parallel.assignedPartitions());
+        if (settings.mode().usesParallelConsumer()) result.put("assigned", parallel.assignedPartitions());
         else result.put("assigned", container == null || container.getAssignedPartitions() == null ? 0 : container.getAssignedPartitions().size());
         if (container != null) {
             var lag = container.metrics().values().stream().flatMap(m -> m.entrySet().stream())
@@ -143,12 +151,18 @@ public class ExperimentController {
                 if (offset == null) { known = false; continue; }
                 remaining += ends.get(partition) - offset.offset();
             }
-            if (settings.mode() == ProcessingMode.RETRY_TOPIC) {
-                var retry = new TopicPartition(settings.retryTopic(), 0);
+            if (settings.mode().usesRetryTopic()) {
+                var retryPartitions = partitions(settings.retryTopic(), settings.mode() == ProcessingMode.KAFKA_RETRY
+                        ? settings.retry().topicPartitions() : 1);
                 var retryCommitted = admin.listConsumerGroupOffsets(group + "-retry").partitionsToOffsetAndMetadata()
-                        .get(2, TimeUnit.SECONDS).get(retry);
-                long retryEnd = endOffsets(admin, List.of(retry)).get(retry);
-                long retryRemaining = retryEnd - (retryCommitted == null ? 0 : retryCommitted.offset());
+                        .get(2, TimeUnit.SECONDS);
+                var retryEnds = endOffsets(admin, retryPartitions);
+                long retryRemaining = 0, retryEnd = 0;
+                for (var partition : retryPartitions) {
+                    var offset = retryCommitted.get(partition);
+                    retryEnd += retryEnds.get(partition);
+                    retryRemaining += retryEnds.get(partition) - (offset == null ? 0 : offset.offset());
+                }
                 result.put("retryRemaining", retryRemaining);
                 result.put("retryLogEnd", retryEnd);
                 remaining += retryRemaining;

@@ -27,6 +27,7 @@ public abstract class MySqlTestBase {
             dataSource.setJdbcUrl(MYSQL.getJdbcUrl());
             dataSource.setUsername(MYSQL.getUsername());
             dataSource.setPassword(MYSQL.getPassword());
+            dataSource.setTransactionIsolation("TRANSACTION_READ_COMMITTED");
             new ResourceDatabasePopulator(new ClassPathResource("schema.sql")).execute(dataSource);
             db = new JdbcTemplate(dataSource);
             tx = new TransactionTemplate(new DataSourceTransactionManager(dataSource));
@@ -38,6 +39,9 @@ public abstract class MySqlTestBase {
         db.update("DELETE FROM inbox");
         db.update("DELETE FROM partner_effect");
         db.update("DELETE FROM partner_order");
+        db.update("DELETE FROM seller_permit");
+        db.update("DELETE FROM retry_admission");
+        db.update("DELETE FROM completion_outbox");
     }
 
     @AfterAll

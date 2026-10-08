@@ -10,8 +10,9 @@ public final class Fixtures {
 
     public static PartnerSettings settings(ProcessingMode mode, String partnerUrl) {
         return new PartnerSettings(mode, "partner-test", partnerUrl, "test", false,
-                4, 2, 2, 1000, 300, 200, 2000, 1, 200, 2000, (short) 1, 60000, false, true, 10000,
-                new PartnerSettings.Breaker(300, 50, 50, 5, 3, 1000));
+                4, 2, 2, 1000, 300, 200, 2000, 1, 200, 2000, (short) 1, 60000, false, 10000,
+                new PartnerSettings.Breaker(300, 50, 50, 5, 3, 1000), new PartnerSettings.Retry(5000, 1251, 4),
+                new PartnerSettings.Ownership(15000, 3000), "", "", 0);
     }
 
     public static PartnerOrderEvent event(String seller, long orderId, int sequence) {

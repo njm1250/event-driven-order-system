@@ -30,13 +30,20 @@ public class SellerCircuitBreakers {
                 .slowCallRateThreshold(breaker.slowCallRatePercent())
                 .waitDurationInOpenState(Duration.ofMillis(breaker.openMs()))
                 .permittedNumberOfCallsInHalfOpenState(1)
-                .automaticTransitionFromOpenToHalfOpenEnabled(false)
+                // The newer candidates skip open sellers without asking the breaker, so the breaker
+                // has to move to half-open by itself after the wait.
+                .automaticTransitionFromOpenToHalfOpenEnabled(settings.mode().usesBackoff())
                 .build();
         this.registry = CircuitBreakerRegistry.of(config);
     }
 
     public boolean tryAcquire(String sellerId) {
         return registry.circuitBreaker(sellerId).tryAcquirePermission();
+    }
+
+    /** Returns a permission taken with {@link #tryAcquire} that was not used for a call. */
+    public void release(String sellerId) {
+        registry.circuitBreaker(sellerId).releasePermission();
     }
 
     public void onSuccess(String sellerId, long durationNanos) {
@@ -49,6 +56,15 @@ public class SellerCircuitBreakers {
 
     public CircuitBreaker.State state(String sellerId) {
         return registry.circuitBreaker(sellerId).getState();
+    }
+
+    /** Sellers whose circuit is open right now. */
+    public java.util.Set<String> openSellers() {
+        java.util.Set<String> result = new java.util.HashSet<>();
+        registry.getAllCircuitBreakers().forEach(b -> {
+            if (b.getState() == CircuitBreaker.State.OPEN) result.add(b.getName());
+        });
+        return result;
     }
 
     public Map<String, String> states() {

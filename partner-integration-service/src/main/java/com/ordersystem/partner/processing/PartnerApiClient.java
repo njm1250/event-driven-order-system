@@ -18,7 +18,9 @@ import java.time.Duration;
  */
 @Component
 public class PartnerApiClient {
-    private final HttpClient http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(2)).build();
+    // HTTP/1.1 with keep-alive for every mode; the version and timeouts are part of the comparison contract.
+    private final HttpClient http = HttpClient.newBuilder().version(HttpClient.Version.HTTP_1_1)
+            .connectTimeout(Duration.ofSeconds(1)).build();
     private final ObjectMapper json;
     private final PartnerSettings settings;
     private final Tracer tracer;
@@ -38,6 +40,7 @@ public class PartnerApiClient {
                 .timeout(Duration.ofMillis(settings.callTimeoutMs()))
                 .header("Content-Type", "application/json")
                 .header("Idempotency-Key", event.eventId())
+                .header("X-Instance", tracer.instance())
                 .POST(HttpRequest.BodyPublishers.ofString(json.writeValueAsString(event)))
                 .build();
         try {

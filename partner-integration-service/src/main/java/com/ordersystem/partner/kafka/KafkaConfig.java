@@ -26,14 +26,14 @@ import java.util.Map;
 @Configuration
 public class KafkaConfig {
     private static final Map<String, String> RETENTION = Map.of(
-            "retention.ms", "86400000", "retention.bytes", "67108864", "segment.bytes", "1048576");
+            "retention.ms", "86400000", "retention.bytes", "2147483648", "segment.bytes", "67108864");
 
     @Bean
     KafkaAdmin.NewTopics partnerTopics(PartnerSettings settings) {
         List<NewTopic> topics = new ArrayList<>();
         topics.add(new NewTopic(settings.topic(), settings.partitions(), settings.replicationFactor()).configs(RETENTION));
-        if (settings.mode() == ProcessingMode.RETRY_TOPIC) {
-            topics.add(new NewTopic(settings.retryTopic(), 1, settings.replicationFactor()).configs(RETENTION));
+        if (settings.mode().usesRetryTopic()) {
+            topics.add(new NewTopic(settings.retryTopic(), retryPartitions(settings), settings.replicationFactor()).configs(RETENTION));
         }
         return new KafkaAdmin.NewTopics(topics.toArray(NewTopic[]::new));
     }
@@ -46,13 +46,17 @@ public class KafkaConfig {
         // The inbox has a single ingestion consumer because it is the authority for the capacity check.
         factory.setConcurrency(settings.mode() == ProcessingMode.INBOX ? 1 : settings.partitions());
         // Parallel Consumer owns its own KafkaConsumer; inbox v2 uses the batch listener instead.
-        factory.setAutoStartup(settings.mode() != ProcessingMode.PARALLEL_CONSUMER
+        factory.setAutoStartup(!settings.mode().usesParallelConsumer()
                 && !(settings.mode() == ProcessingMode.INBOX && settings.inboxBatchIngest()));
         factory.getContainerProperties().setAsyncAcks(settings.mode() == ProcessingMode.ASYNC);
         factory.getContainerProperties().setConsumerRebalanceListener(new ConsumerAwareRebalanceListener() {
             @Override
             public void onPartitionsRevokedBeforeCommit(Consumer<?, ?> consumer, Collection<TopicPartition> partitions) {
-                pending.getObject().revokeAll();
+                // Each container shares this queue; only its own revoked partitions are dropped.
+                if (settings.mode() == ProcessingMode.ASYNC) {
+                    pending.getObject().revoke(partitions.stream().filter(p -> p.topic().equals(settings.topic()))
+                            .map(TopicPartition::partition).toList());
+                }
                 tracer.getObject().trace("partitions_revoked", null, "partitions", partitions.toString());
             }
 
@@ -78,8 +82,14 @@ public class KafkaConfig {
     ConcurrentKafkaListenerContainerFactory<String, String> retryFactory(
             ConsumerFactory<String, String> consumerFactory, PartnerSettings settings) {
         var factory = baseFactory(consumerFactory);
-        factory.setAutoStartup(settings.mode() == ProcessingMode.RETRY_TOPIC);
+        factory.setConcurrency(retryPartitions(settings));
+        factory.setAutoStartup(settings.mode().usesRetryTopic());
         return factory;
+    }
+
+    /** The original retry-topic mode used one partition; the comparison candidate spreads the lane. */
+    static int retryPartitions(PartnerSettings settings) {
+        return settings.mode() == ProcessingMode.KAFKA_RETRY ? settings.retry().topicPartitions() : 1;
     }
 
     private static ConcurrentKafkaListenerContainerFactory<String, String> baseFactory(

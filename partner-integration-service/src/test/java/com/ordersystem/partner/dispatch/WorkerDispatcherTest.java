@@ -5,6 +5,9 @@ import com.ordersystem.partner.PartnerTask;
 import com.ordersystem.partner.Tracer;
 import com.ordersystem.partner.config.ProcessingMode;
 import com.ordersystem.partner.inbox.InboxRepository;
+import com.ordersystem.partner.inbox.LeaseKeeper;
+import com.ordersystem.partner.processing.SellerCircuitBreakers;
+import org.springframework.transaction.support.TransactionTemplate;
 import com.ordersystem.partner.processing.PartnerOrderProcessor;
 import org.junit.jupiter.api.Test;
 import org.springframework.kafka.support.Acknowledgment;
@@ -21,10 +24,16 @@ class WorkerDispatcherTest {
     private final AdmissionPolicy admission = new AdmissionPolicy(4, 2, 2, 1000, 100, System::currentTimeMillis);
     private final AsyncPendingQueue pending = new AsyncPendingQueue();
 
-    private WorkerDispatcher dispatcher(ProcessingMode mode) {
+    private WorkerDispatcher dispatcher(ProcessingMode mode, PartnerOrderProcessor processor) {
         var settings = settings(mode, "http://unused");
-        return new WorkerDispatcher(settings, mock(InboxRepository.class), pending, admission,
-                mock(PartnerOrderProcessor.class), new Tracer(new ObjectMapper(), settings));
+        var tracer = new Tracer(new ObjectMapper(), settings);
+        var inbox = mock(InboxRepository.class);
+        return new WorkerDispatcher(settings, inbox, pending, admission, processor, new SellerCircuitBreakers(settings),
+                new LeaseKeeper(inbox, settings, tracer), mock(TransactionTemplate.class), tracer);
+    }
+
+    private WorkerDispatcher dispatcher(ProcessingMode mode) {
+        return dispatcher(mode, mock(PartnerOrderProcessor.class));
     }
 
     private PartnerTask received(Acknowledgment ack) {
@@ -52,20 +61,18 @@ class WorkerDispatcherTest {
     void inboxDoesNotRunAFinishedEventAgainFromAStaleSnapshot() {
         var dispatcher = dispatcher(ProcessingMode.INBOX);
         var task = new PartnerTask(event("normal", 1, 1), null, "partner-test", 0, 0);
-        admission.tryAdmit(task);
-        dispatcher.run(task);
+        admission.tryAdmitLocal(task);
+        dispatcher.runClaimed(task, new InboxRepository.Claim(task.eventId(), "normal", "me", 1, 1, false, false));
 
         var staleCopy = new PartnerTask(event("normal", 1, 1), null, "partner-test", 0, 0);
-        assertThat(admission.tryAdmit(staleCopy).admitted()).isFalse();
+        assertThat(admission.tryAdmitLocal(staleCopy).admitted()).isFalse();
     }
 
     @Test
     void stopLetsInFlightCallsFinishAndStartsNoNewWork() throws Exception {
-        var settings = settings(ProcessingMode.ASYNC, "http://unused");
         var processor = mock(PartnerOrderProcessor.class);
         doAnswer(call -> { Thread.sleep(300); return null; }).when(processor).process(any());
-        var dispatcher = new WorkerDispatcher(settings, mock(InboxRepository.class), pending, admission, processor,
-                new Tracer(new ObjectMapper(), settings));
+        var dispatcher = dispatcher(ProcessingMode.ASYNC, processor);
         var ack = mock(Acknowledgment.class);
         received(ack);
         dispatcher.dispatch();

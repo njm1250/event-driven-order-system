@@ -5,7 +5,10 @@ import com.ordersystem.common.experiment.BoundaryGate;
 import com.ordersystem.partner.PartnerTask;
 import com.ordersystem.partner.Tracer;
 import com.ordersystem.partner.config.PartnerSettings;
+import com.ordersystem.partner.dispatch.RetryBackoff;
 import org.apache.kafka.clients.producer.ProducerRecord;
+import org.apache.kafka.common.header.Header;
+import org.apache.kafka.common.header.Headers;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.stereotype.Component;
 
@@ -24,12 +27,15 @@ import java.util.concurrent.TimeUnit;
 @Component
 public class RetryLane {
     static final String ATTEMPTS = "retry-attempts";
+    static final String HTTP_ATTEMPTS = "retry-http-attempts";
+    static final String FAILURES = "retry-failures";
     static final String NOT_BEFORE = "retry-not-before";
 
     private final KafkaTemplate<String, String> producer;
     private final ObjectMapper json;
     private final PartnerSettings settings;
     private final Tracer tracer;
+    private final RetryBackoff backoff;
     private final Map<String, Set<String>> parkedByOrder = new HashMap<>();
 
     public RetryLane(KafkaTemplate<String, String> producer, ObjectMapper json, PartnerSettings settings, Tracer tracer) {
@@ -37,6 +43,7 @@ public class RetryLane {
         this.json = json;
         this.settings = settings;
         this.tracer = tracer;
+        this.backoff = RetryBackoff.of(settings);
     }
 
     public synchronized boolean hasParked(String orderKey) {
@@ -45,9 +52,13 @@ public class RetryLane {
 
     /** Publishes synchronously; the caller acks its own record only after this returns. */
     public void park(PartnerTask task, String reason) throws Exception {
-        long notBefore = System.currentTimeMillis() + settings.retryDelayMs();
+        int failures = task.nextFailure();
+        long delay = settings.mode().usesBackoff() ? backoff.delayMs(task.eventId(), failures) : settings.retryDelayMs();
+        long notBefore = System.currentTimeMillis() + delay;
         var record = new ProducerRecord<>(settings.retryTopic(), task.key(), json.writeValueAsString(task.event()));
         record.headers().add(ATTEMPTS, ByteBuffer.allocate(4).putInt(task.attempts()).array());
+        record.headers().add(HTTP_ATTEMPTS, ByteBuffer.allocate(4).putInt(task.httpAttempts()).array());
+        record.headers().add(FAILURES, ByteBuffer.allocate(4).putInt(failures).array());
         record.headers().add(NOT_BEFORE, ByteBuffer.allocate(8).putLong(notBefore).array());
         producer.send(record).get(5, TimeUnit.SECONDS);
         synchronized (this) {
@@ -66,5 +77,21 @@ public class RetryLane {
 
     public synchronized int parkedOrders() {
         return parkedByOrder.size();
+    }
+
+    /** Restores the counters a parked record carries. */
+    static void restore(PartnerTask task, Headers headers) {
+        task.attempts(readInt(headers.lastHeader(ATTEMPTS)));
+        task.httpAttempts(readInt(headers.lastHeader(HTTP_ATTEMPTS)));
+        task.failures(readInt(headers.lastHeader(FAILURES)));
+    }
+
+    static long notBefore(Headers headers) {
+        Header header = headers.lastHeader(NOT_BEFORE);
+        return header == null ? 0 : ByteBuffer.wrap(header.value()).getLong();
+    }
+
+    private static int readInt(Header header) {
+        return header == null ? 0 : ByteBuffer.wrap(header.value()).getInt();
     }
 }

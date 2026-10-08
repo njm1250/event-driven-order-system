@@ -11,6 +11,8 @@ public final class PartnerTask {
     private final int partition;
     private final long offset;
     private int attempts;
+    private int httpAttempts;
+    private int failures;
     private long nextAt;
     private long epoch;
 
@@ -34,6 +36,16 @@ public final class PartnerTask {
     public int attempts() { return attempts; }
     public void attempts(int value) { attempts = value; }
     public int nextAttempt() { return ++attempts; }
+
+    /** Partner calls actually started for this event, as opposed to deliveries tried. */
+    public int httpAttempts() { return httpAttempts; }
+    public void httpAttempts(int value) { httpAttempts = value; }
+    public void markHttpAttempt() { httpAttempts++; }
+
+    /** How often the event was put back (failed call, open circuit, limit reached); drives the backoff. */
+    public int failures() { return failures; }
+    public void failures(int value) { failures = value; }
+    public int nextFailure() { return ++failures; }
 
     public long nextAt() { return nextAt; }
     public void nextAt(long value) { nextAt = value; }

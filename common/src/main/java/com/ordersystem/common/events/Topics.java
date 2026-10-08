@@ -9,6 +9,7 @@ public final class Topics {
     public static final String NOTIFICATION_BULK = "notification-requests-bulk";
 
     public static final String PARTNER_REQUESTS = "partner-order-requests";
+    public static final String PARTNER_COMPLETIONS = "partner-order-completions";
 
     private Topics() {
     }

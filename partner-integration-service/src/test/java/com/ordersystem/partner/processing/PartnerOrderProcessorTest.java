@@ -3,6 +3,7 @@ package com.ordersystem.partner.processing;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.ordersystem.partner.PartnerTask;
 import com.ordersystem.partner.Tracer;
+import com.ordersystem.partner.completion.CompletionOutbox;
 import com.ordersystem.partner.config.PartnerSettings;
 import com.ordersystem.partner.config.ProcessingMode;
 import com.ordersystem.partner.inbox.InboxRepository;
@@ -35,7 +36,8 @@ class PartnerOrderProcessorTest extends MySqlTestBase {
         PartnerSettings settings = settings(mode, partner.url());
         var tracer = new Tracer(json, settings);
         return new PartnerOrderProcessor(new PartnerOrderRepository(db), new InboxRepository(db, json),
-                new PartnerApiClient(json, settings, tracer), new SellerCircuitBreakers(settings), tx, settings, tracer);
+                new PartnerApiClient(json, settings, tracer), new SellerCircuitBreakers(settings),
+                new CompletionOutbox(db, json, settings, tracer), tx, settings, tracer);
     }
 
     @Test

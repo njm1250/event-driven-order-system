@@ -30,6 +30,7 @@ public class PartnerListener {
     private final InboxRepository inbox;
     private final AsyncPendingQueue pending;
     private final RetryLane retryLane;
+    private final RetryAdmission retryAdmission;
     private final TransactionTemplate tx;
     private final WorkerDispatcher dispatcher;
     private final Tracer tracer;
@@ -37,13 +38,14 @@ public class PartnerListener {
 
     public PartnerListener(PartnerSettings settings, ObjectMapper json, PartnerOrderProcessor processor,
                            InboxRepository inbox, AsyncPendingQueue pending, RetryLane retryLane,
-                           TransactionTemplate tx, WorkerDispatcher dispatcher, Tracer tracer) {
+                           RetryAdmission retryAdmission, TransactionTemplate tx, WorkerDispatcher dispatcher, Tracer tracer) {
         this.settings = settings;
         this.json = json;
         this.processor = processor;
         this.inbox = inbox;
         this.pending = pending;
         this.retryLane = retryLane;
+        this.retryAdmission = retryAdmission;
         this.tx = tx;
         this.dispatcher = dispatcher;
         this.tracer = tracer;
@@ -69,7 +71,8 @@ public class PartnerListener {
                 dispatcher.wake();
             }
             case RETRY_TOPIC -> deliverOrPark(task);
-            case PARALLEL_CONSUMER -> throw new IllegalStateException("Parallel Consumer does not use this listener");
+            case KAFKA_RETRY -> deliverAdmittedOrPark(task);
+            case PARALLEL_CONSUMER, KAFKA_BUCKET -> throw new IllegalStateException("Parallel Consumer does not use this listener");
         }
     }
 
@@ -141,6 +144,27 @@ public class PartnerListener {
         BoundaryGate.hit("business_commit", task.eventId());
         task.ack().acknowledge();
         tracer.trace("ack_requested", task, "meaning", "business completed");
+    }
+
+    /**
+     * Retry-topic candidate: the first try runs under the shared admission. A seller at its limit
+     * is parked right away, so this partition keeps moving for the other sellers.
+     */
+    private void deliverAdmittedOrPark(PartnerTask task) throws Exception {
+        if (retryLane.hasParked(task.key())) {
+            retryLane.park(task, "order already parked");
+        } else if (retryAdmission.admitOrPark(task)) {
+            try {
+                processor.process(task);
+                BoundaryGate.hit("business_commit", task.eventId());
+            } catch (Exception e) {
+                retryLane.park(task, e.toString());
+            } finally {
+                retryAdmission.release(task);
+            }
+        }
+        task.ack().acknowledge();
+        tracer.trace("ack_requested", task, "meaning", "delivered or parked");
     }
 
     /** One try on the main topic; anything that cannot finish now moves to the retry topic. */

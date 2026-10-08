@@ -13,10 +13,17 @@ import java.util.function.LongSupplier;
  * Decides whether a worker may start a task now. Encodes the isolation rules: a global worker
  * limit, at most one running operation per order, a per-seller concurrency cap, and a per-seller
  * retry budget so one failing seller cannot spend every worker on retries.
+ *
+ * In the inbox mode the seller cap and retry budget live in the database, shared by every
+ * instance, and only the local part (workers, one operation per order) is checked here.
  */
 public final class AdmissionPolicy {
-    public record Admission(boolean admitted, boolean retry, long at) {
-        static final Admission REJECTED = new Admission(false, false, 0);
+    public enum Reason { ADMITTED, GLOBAL_FULL, ORDER_BUSY, SELLER_FULL, NOT_DUE, FINISHED, RETRY_BUDGET }
+
+    public record Admission(boolean admitted, boolean retry, long at, Reason reason) {
+        static Admission rejected(Reason reason) {
+            return new Admission(false, false, 0, reason);
+        }
     }
 
     private final int workers;
@@ -39,23 +46,31 @@ public final class AdmissionPolicy {
         this.clock = clock;
     }
 
-    public synchronized Admission tryAdmit(PartnerTask task) {
+    public Admission tryAdmit(PartnerTask task) {
+        return tryAdmit(task, true);
+    }
+
+    /** Workers and one operation per order only; the caller enforces seller and retry limits. */
+    public Admission tryAdmitLocal(PartnerTask task) {
+        return tryAdmit(task, false);
+    }
+
+    private synchronized Admission tryAdmit(PartnerTask task, boolean sellerLimits) {
         // Read the clock inside the monitor so the retry window reflects the real admission order.
         long now = clock.getAsLong();
         String seller = task.sellerId();
-        if (active >= workers
-                || activeKeys.contains(task.key())
-                || activeSellers.getOrDefault(seller, 0) >= sellerConcurrency
-                || task.nextAt() > now
-                || finished.contains(task.eventId())) {
-            return Admission.REJECTED;
-        }
+        if (active >= workers) return Admission.rejected(Reason.GLOBAL_FULL);
+        if (activeKeys.contains(task.key())) return Admission.rejected(Reason.ORDER_BUSY);
+        if (sellerLimits && activeSellers.getOrDefault(seller, 0) >= sellerConcurrency) return Admission.rejected(Reason.SELLER_FULL);
+        if (task.nextAt() > now) return Admission.rejected(Reason.NOT_DUE);
+        if (finished.contains(task.eventId())) return Admission.rejected(Reason.FINISHED);
+        // A retry is an admission after a partner call may already have started for this event.
         boolean retry = task.attempts() > 0;
-        if (retry && !retryBudget.tryAcquire(seller, now)) return Admission.REJECTED;
+        if (sellerLimits && retry && !retryBudget.tryAcquire(seller, now)) return Admission.rejected(Reason.RETRY_BUDGET);
         active++;
         activeKeys.add(task.key());
         activeSellers.merge(seller, 1, Integer::sum);
-        return new Admission(true, retry, now);
+        return new Admission(true, retry, now, Reason.ADMITTED);
     }
 
     public synchronized void markFinished(String eventId) {

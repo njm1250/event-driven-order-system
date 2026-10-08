@@ -40,6 +40,11 @@ class Handler(BaseHTTPRequestHandler):
                 attempts = [dict(x) for x in db.execute('SELECT * FROM attempts ORDER BY id')]
                 orders = [dict(x) for x in db.execute('SELECT * FROM orders')]
                 self.reply(200, dict(effects=effects, attempts=attempts, orders=orders, active=active.copy(), time=now()))
+        elif self.path == '/stats':
+            with lock:
+                counts = dict(effects=db.execute('SELECT COUNT(*) FROM effects').fetchone()[0],
+                              attempts=db.execute('SELECT MAX(id) FROM attempts').fetchone()[0] or 0)
+                self.reply(200, dict(time=now(), active=active.copy(), **counts))
         else:
             self.reply(200, dict(time=now(), active=active.copy()))
 
@@ -69,11 +74,12 @@ class Handler(BaseHTTPRequestHandler):
             return
         start = now()
         with lock:
-            policy = controls.get(seller, {}).copy()
+            # A seller without its own policy follows the default one ('*'), e.g. the normal service time.
+            policy = controls.get(seller, controls.get('*', {})).copy()
             active[seller] = active.get(seller, 0) + 1
             count = db.execute('SELECT COUNT(*) FROM attempts WHERE event_id=?', (key,)).fetchone()[0]
-            attempt = db.execute('INSERT INTO attempts(event_id,seller_id,order_id,seq,start_at) VALUES(?,?,?,?,?)',
-                                 (key, seller, data['orderId'], data['sequence'], start)).lastrowid
+            attempt = db.execute('INSERT INTO attempts(event_id,seller_id,order_id,seq,start_at,instance) VALUES(?,?,?,?,?,?)',
+                                 (key, seller, data['orderId'], data['sequence'], start, self.headers.get('X-Instance'))).lastrowid
             db.commit()
         time.sleep(policy.get('delayMs', 0) / 1000)
         status = 200
@@ -106,7 +112,7 @@ class Handler(BaseHTTPRequestHandler):
 
 LEDGER_SCHEMA = '''PRAGMA journal_mode=WAL;
     CREATE TABLE IF NOT EXISTS effects(effect_index INTEGER PRIMARY KEY AUTOINCREMENT,event_id TEXT,seller_id TEXT,order_id INTEGER,seq INTEGER,operation TEXT,quantity INTEGER,price REAL,occurred_at INTEGER,effect_at INTEGER,payload TEXT);
-    CREATE TABLE IF NOT EXISTS attempts(id INTEGER PRIMARY KEY AUTOINCREMENT,event_id TEXT,seller_id TEXT,order_id INTEGER,seq INTEGER,start_at INTEGER,end_at INTEGER,status INTEGER,response_lost INTEGER);
+    CREATE TABLE IF NOT EXISTS attempts(id INTEGER PRIMARY KEY AUTOINCREMENT,event_id TEXT,seller_id TEXT,order_id INTEGER,seq INTEGER,start_at INTEGER,end_at INTEGER,status INTEGER,response_lost INTEGER,instance TEXT);
     CREATE TABLE IF NOT EXISTS orders(seller_id TEXT,order_id INTEGER,seq INTEGER,operation TEXT,quantity INTEGER,price REAL,PRIMARY KEY(seller_id,order_id));'''
 
 

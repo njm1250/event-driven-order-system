@@ -19,17 +19,20 @@ public class Tracer {
     private final PartnerSettings settings;
     private final String instance = UUID.randomUUID().toString();
     private final AtomicLong count = new AtomicLong();
+    private final java.util.Set<String> stages;
 
     public Tracer(ObjectMapper json, PartnerSettings settings) {
         this.json = json;
         this.settings = settings;
+        this.stages = settings.tracedStages();
     }
 
     public String instance() { return instance; }
     public long count() { return count.get(); }
 
     public void trace(String stage, PartnerTask task, Object... detail) {
-        if (!settings.traceEnabled()) return;
+        // Long load runs keep only the stages their analysis reads; every line costs CPU on this host.
+        if (!settings.traceEnabled() || (!stages.isEmpty() && !stages.contains(stage))) return;
         Map<String, Object> data = new LinkedHashMap<>();
         data.put("time", System.currentTimeMillis());
         data.put("stage", stage);
