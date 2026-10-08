@@ -13,6 +13,8 @@ import static com.ordersystem.partner.support.Fixtures.event;
 import static com.ordersystem.partner.support.Fixtures.settings;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.verify;
 
 class WorkerDispatcherTest {
@@ -55,5 +57,25 @@ class WorkerDispatcherTest {
 
         var staleCopy = new PartnerTask(event("normal", 1, 1), null, "partner-test", 0, 0);
         assertThat(admission.tryAdmit(staleCopy).admitted()).isFalse();
+    }
+
+    @Test
+    void stopLetsInFlightCallsFinishAndStartsNoNewWork() throws Exception {
+        var settings = settings(ProcessingMode.ASYNC, "http://unused");
+        var processor = mock(PartnerOrderProcessor.class);
+        doAnswer(call -> { Thread.sleep(300); return null; }).when(processor).process(any());
+        var dispatcher = new WorkerDispatcher(settings, mock(InboxRepository.class), pending, admission, processor,
+                new Tracer(new ObjectMapper(), settings));
+        var ack = mock(Acknowledgment.class);
+        received(ack);
+        dispatcher.dispatch();
+
+        dispatcher.stop();
+
+        verify(ack).acknowledge();
+        assertThat(admission.active()).isZero();
+        received(mock(Acknowledgment.class));
+        dispatcher.dispatch();
+        assertThat(admission.active()).isZero();
     }
 }

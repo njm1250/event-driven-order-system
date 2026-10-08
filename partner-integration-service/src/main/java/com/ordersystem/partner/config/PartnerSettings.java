@@ -28,6 +28,7 @@ public record PartnerSettings(
         @DefaultValue("60000") long inboxDoneRetentionMs,
         @DefaultValue("true") boolean inboxBatchIngest,
         @DefaultValue("true") boolean inboxAttemptsBeforeCall,
+        @DefaultValue("10000") long shutdownDrainMs,
         @DefaultValue Breaker breaker) {
 
     public String retryTopic() {

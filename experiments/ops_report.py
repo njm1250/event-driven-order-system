@@ -66,7 +66,7 @@ for directory in sorted(x for x in root.iterdir() if x.is_dir()):
         if signal is None or truth is None:
             continue
         samples.append(dict(lag=service.get('committedRemaining'), signal=signal.get('slow', 0), truth=truth))
-    if samples:
+    if samples and settings['mode'] in {'inbox', 'inbox-batch', 'inbox-lean'}:
         sli.append(dict(run=directory.name, mode=settings['mode'], scenario=settings['scenario'], samples=len(samples),
                         peakLag=max((x['lag'] or 0) for x in samples), peakSignalMs=max(x['signal'] for x in samples),
                         peakTruthMs=max(x['truth'] for x in samples),
