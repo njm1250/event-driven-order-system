@@ -148,7 +148,7 @@ class Suite:
     def g0_mock(self):
         """Seller API mock alone at twice the highest planned input, 20ms service time."""
         try:
-            runner.http(topo.MOCK.url() + '/reset', dict(name='g0-mock'))
+            runner.http(topo.MOCK.url() + '/reset', dict(name=f'g0-mock-{int(time.time())}'))
             runner.http(topo.MOCK.url() + '/control', {'sellerId': '*', 'delayMs': runner.NORMAL_DELAY_MS})
             directory, start, records, summary = self._direct_load('mock-direct', 'mock', topo.MOCK.url(), 320, 120)
             snapshot = runner.http(topo.MOCK.url() + '/snapshot', timeout=120)
